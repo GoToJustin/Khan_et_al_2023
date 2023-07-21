@@ -1,0 +1,566 @@
+/* This is "TC_Results_TimeSeries_ver21.txt"
+
+	Justin E. Molloy
+	Francis Crick Institute
+	justin.molloy@crick.ac.uk
+	27-Jan-2023
+
+This macro enables you to fit steps to spot intensity data
+   Sliders and Buttons make the process interactive.
+To Start:  
+   Load one file.
+   Move the sliders (with mouse LEFT button) to change the fitting parameters
+   This version all sliders should work !!!
+   Use the buttons to change the color channel, advance to next spot or SAVE
+   SAVE the step changes when you are happy with how they look
+   Data will be appended into a ".csv" file where you can further
+   process using Excel.
+
+   Remember...If the raw data is crap... just don't save it!
+
+To Continue....
+   When finished..click the RIGHT mouse button in the sliders window 
+   to load the next file
+
+Note: if you click the mouse too fast it will no longer seem to work.
+     To solve this... click outside the "Sliders&Buttons" window.
+	this usually cures the glitch!
+*/
+
+// create some dinky colour combinations:
+// see:   https://en.wikipedia.org/wiki/List_of_colors
+var avocado= "#568203"; var lime =   "#D0FF14";
+var azure =  "#007FFF"; var beau =   "#BCD4E6";
+var capri=   "#00BFFF"; var cyan =   "#00B7EB";
+var orchid = "#E29CD2";
+var brown =  "#88540B"; var copper = "#DA8A67";
+var imperial="#ED2939"; var pink =   "#EFBBCC";
+
+// Code for bigger circles! 
+var circleCode = "code: fillOval(x-5*s,y-5*s,10*s,10*s);setColor('#D0FF14');fillOval(x-3*s,y-3*s,6*s,6*s);";
+
+// create global variables for sliders and buttons graphics
+var name = "Sliders & Buttons";
+// window size and font size
+var width=512;
+var fSize=16;
+
+// sliders
+var sliders = newArray("Deriv", "Smooth", "Thresh", "Delta", "Min-Y", "Max-Y");
+var s  = newArray(sliders.length);
+var mi = newArray(sliders.length);
+var ma = newArray(sliders.length);
+var v  = newArray(sliders.length);
+//slider width and height
+var w=25;
+var h=50;
+
+//buttons
+var buttons = newArray("Green",   "FRET",  "Red",  "<=",   "=>",  "Save");
+var bx  = newArray(buttons.length);
+var by  = newArray(buttons.length);
+// button width
+var wb=75;
+
+// some colors for sliders, buttons and plots
+var colors = newArray("black", "blue", "cyan", "gray", "green", "lightGray", "magenta", "orange", "pink", "red", "yellow");
+var buttcol = newArray("green", "magenta", "red", "yellow", "yellow", "cyan");
+var buttfill = newArray(lime, orchid, pink);
+
+
+//store defaults for each of the 3 color channels
+var deriv = newArray(3);
+var smth = newArray(3);
+var thresh = newArray(3);
+var delta = newArray(3);
+var min = newArray(3);
+var max = newArray(3);
+
+// set all the defaults for different color channels.....
+//Green
+var GREEN_inten = newArray(1);
+deriv[0] = 5;
+smth[0] = 10;
+thresh[0] = 75;
+delta[0] = 100;
+min[0] = 0;
+max[0] = 5000;
+
+//FRET
+var FRET_inten = newArray(1);
+deriv[1] = 7;
+smth[1] = 10;
+thresh[1] = 30;
+delta[1] = 100;
+min[1] = -100;
+max[1] = 1000;
+
+//Red
+var RED_inten = newArray(1);
+deriv[2] = 7;
+smth[2] = 5;
+thresh[2] = 20;
+delta[2] = 100;
+min[2] = -500;
+max[2] = 500;
+
+// loop logic
+var mod=-1;
+var butt=0;
+
+// Create other global variables and arrays
+var folder="";
+var nSpots = 0;
+var nFrames= 0;
+var npts = nSpots*nFrames;
+var spot = 0;
+var chan = 0;
+
+var st_nd = newArray(1);
+var i_fit = newArray(1);
+var inten_deriv = newArray(1);
+var tVals = newArray(1);
+
+print("\\Clear");
+
+// build the sliders and buttons window
+createControls();
+
+// ================= This is the main program loop ================
+
+do {
+
+// load up the data files
+loadCSVfiles();
+
+// draw the images if you like....
+//loadImages();
+
+// startup values and initial cursorLoc position call
+spot=0;
+st= spot*nFrames;
+nd= (spot+1) * nFrames;
+fitSteps(chan);
+getCursorLoc(x,y,z,flags);
+
+// now into the inner analysis "while" loop......
+// loop until the right mouse button is pressed
+while (flags!=4){ 
+
+if (getTitle==name){
+	getCursorLoc(x,y,z,flags);
+	while (flags==16) { 		// left button
+		getCursorLoc(x,y,z,flags);
+
+//find out which "line" the cursor is on
+		c = floor(y/h);
+		if ((x>=0)&&(x<=width)&&(c < s.length)&&(c>=0)) {
+			s[c]=x;
+			drawSlider(c);
+// update all the defaults
+			deriv[chan] = v[0];
+			smth[chan]  = v[1];
+			thresh[chan]= v[2];
+			delta[chan] = v[3];
+			min[chan]   = v[4];
+			max[chan]   = v[5];
+			mod=c;
+		} 
+
+		else { 
+			for (i=0; i < buttons.length ; i++) {
+				if ((x > bx[i]) && (x < (bx[i]+wb)) ){ 
+					butt = i;
+					drawButton(butt);
+					mod=c;
+				}
+			}
+		}
+	wait(5);
+	}
+}
+
+// check to see if anything was clicked....
+if (mod>-1) {
+	// check if button pressed
+	if (mod == s.length) { 
+		if ((butt>=0) && (butt<3)) {
+			chan = butt;
+			// update slider settings - dirty coding!
+			s[0] = ((deriv[chan] - mi[0]) / (ma[0] - mi[0])) * width;
+			drawSlider(0);
+			s[1] = ((smth[chan] - mi[1]) / (ma[1] - mi[1])) * width;
+			drawSlider(1);
+			s[2] = ((thresh[chan] - mi[2]) / (ma[2] - mi[2])) * width;
+			drawSlider(2);
+			s[3] = ((delta[chan] - mi[3]) / (ma[3] - mi[3])) * width;
+			drawSlider(3);
+			s[4] = ((min[chan] - mi[4]) / (ma[4] - mi[4])) * width;
+			drawSlider(4);
+			s[5] = ((max[chan] - mi[5]) / (ma[5] - mi[5])) * width;
+			drawSlider(5);
+		}
+		if ((butt==3) && (spot >0)) spot--;
+		if ((butt==4) && (spot <nSpots)) spot++;
+		if  (butt==5) {	
+			print ("Saving Spot Number"+d2s(spot,0)+" to:"+folder+buttons[chan]+"_spot_data.csv");
+			if (!File.exists(folder+buttons[chan]+"_spot_data.csv")){
+				File.append("Spot#,Time(s),Intensity", folder+buttons[chan]+"_spot_data.csv");
+			}
+			for (i=0;i<st_nd.length;i++){
+				File.append(d2s(spot,0)+","+d2s(st_nd[i],2)+","+d2s(i_fit[i],2), folder+buttons[chan]+"_spot_data.csv");
+			}
+		}
+	}
+
+// update the plot
+	st= spot*nFrames;
+	nd= (spot+1) * nFrames;
+	fitSteps(chan);
+//clear the "mod"ified flag
+	mod=-1;
+}
+
+} // repeat until "right button" is clicked!
+
+print ("DONE with this file... load up another");
+
+// loop indefinitely!
+} while(1);
+
+// =================  End of the main program loop  ================
+
+//==================================================================
+//               from here down you find various functions
+//==================================================================
+
+//=======================
+function fitSteps(chan) {
+//=======================
+// this function finds the steps using parameters set by the sliders
+// first, copy the correct color channel into the intensity array
+
+if (chan == 0) inten = Array.slice(GREEN_inten, st, nd);
+if (chan == 1) inten = Array.slice(FRET_inten, st, nd);
+if (chan == 2) inten = Array.slice(RED_inten, st, nd);
+
+// calculate "absolute" derivative over "v[0]" window
+//---------------------------------------------------
+	d2 = v[0];
+	d = d2/2;
+
+	for (i=0; i<(nFrames); i++) inten_deriv[i] = 0;
+
+	for (i=0; i<(nFrames-d2); i++){ 
+		accum1=0;
+		for (j=0; j<d; j++){
+			accum1+=inten[i+j];
+		}
+		accum2=0;
+		for (j=d; j<d2; j++){
+			accum2+=inten[i+j];
+		}
+		inten_deriv[i+d] = abs((accum2-accum1)/d);
+	}
+
+// smooth derivative over "v[1]" window 
+//-------------------------------------
+	sm=v[1];
+	smooth = newArray(inten_deriv.length);
+	for (i=0; i<smooth.length; i++) smooth[i] = inten_deriv[i];
+	for (i=0; i<(nFrames-sm); i++){ 
+		accum=0;
+		for (j=0; j<sm; j++){
+			accum+=inten_deriv[i+j];
+		}
+		smooth[i+sm/2] = accum/sm;
+	}
+	for (i=0; i<smooth.length; i++) inten_deriv[i] = smooth[i];
+
+// find the peaks using the "v[2]" threshold
+//------------------------------------------
+	peakList= Array.findMaxima(inten_deriv, v[2],1);
+// append "start"=0 and "end"= inten_deriv.length-1 to the peak list!
+	peakList[peakList.length]= 0;
+	peakList[peakList.length]= inten_deriv.length-1;
+	Array.sort(peakList);
+
+// filter out steps smaller than "v[3]" delta
+//------------------------------------------- 
+	ct=0;
+	while (ct < (peakList.length-2)){	
+		Array.getStatistics(Array.slice(inten, peakList[ct], peakList[ct+1]), mn, mx, mean1);
+		Array.getStatistics(Array.slice(inten, peakList[ct+1], peakList[ct+2]), mn, mx, mean2);
+		deltaMean = abs(mean2-mean1);
+		ct+=1;
+		if (deltaMean < v[3]) {
+			peakList = Array.deleteIndex(peakList, ct);
+			ct-=1;
+		}
+	} 
+
+// shift the inten_deriv data so it is plotted relative to "minY"
+	for (i=0; i<inten_deriv.length; i++) inten_deriv[i] = inten_deriv[i]+ min[chan];
+
+// extract the x,y, values using the peakList
+	peakx = newArray(1);
+	peaky = newArray(1);
+	for (j= 0; j < peakList.length; j++){
+		peakx[j] = tVals[peakList[j]];
+      	peaky[j] = inten_deriv[peakList[j]];
+	}
+
+// create the output arrays iterating through peak list
+//-----------------------------------------------------
+/*
+Intensity trace: spot(0)
+
+Inten.
+ 7 |
+ 6 |  ....
+ 5 |...  ....           ...........
+ 4 |        .......     
+ 3 |              .......
+ 2 |
+ 1 |
+---|------------------------------|--->
+    0             time            30
+
+Example output array:
+      Spot    st_nd   I_fit
+        0       0       5
+        0       2       5
+        0       2       6
+        0       5       6
+        0       5       5
+        0       8       5
+        0       8       4
+        0      14       4
+        0      14       3
+        0      20       3
+        0      20       5
+        0      30       5 
+*/
+	Array.getStatistics(Array.slice(inten, peakList[0], peakList[1]), mn, mx, mean);
+	st_nd[0] = 0;
+	i_fit[0] = mean;
+
+	ct=1;
+	for (j=1 ; j<peakList.length-1; j++){
+		st_nd[ct] = tVals[peakList[j]];
+		i_fit[ct] = mean;
+		ct+=1;
+		st_nd[ct] = st_nd[ct-1];
+		Array.getStatistics(Array.slice(inten, peakList[j], peakList[j+1]), mn, mx, mean);
+		i_fit[ct] = mean;
+		ct+=1;
+	}
+	st_nd[ct] = tVals[peakList[peakList.length-1]];
+	i_fit[ct] = mean;
+	nRes = ct+1;
+	st_nd = Array.trim(st_nd,nRes);
+	i_fit = Array.trim(i_fit,nRes);
+
+// Kill the old graph and plot the new graph
+//------------------------------------------
+	if (isOpen("Intensity vs Time")){ 
+		selectWindow("Intensity vs Time");
+		close();
+	}
+
+// setup the plot window
+	call("ij.gui.ImageWindow.setNextLocation", 20, 100)
+	Plot.create("Intensity vs Time", "Time (s)", "Intensity");
+	Plot.setFrameSize(512,512);
+	Plot.setLimits(0, tVals[nFrames-1], min[chan], max[chan]);
+
+// plot the raw data
+	Plot.setLineWidth(1);
+	Plot.setColor (buttcol[chan],buttfill[chan]);
+	Plot.add("circles", tVals, inten);
+
+// plot the derivative and peak positions.
+	Plot.setColor (azure);
+	Plot.add("line", tVals, inten_deriv);
+	Plot.setColor(avocado);
+	Plot.add(circleCode, peakx, peaky);
+
+// plot the fitted line
+ 	Plot.setLineWidth(2);
+	Plot.setColor ("black");
+	Plot.add("line", st_nd, i_fit);
+
+// annotate the plot
+	Plot.setColor("black");
+	Plot.setFontSize(16, "bold");
+	Plot.addText("Spot No:"+d2s(spot,0), 0.8, 0.1)
+	Plot.setFontSize(16, "normal");
+	Plot.show();
+	run("RGB Color");
+}
+
+//======================
+function loadCSVfiles(){
+//======================
+// If the files are NOT found in the folder you are screwed!
+// folder is a global variable
+
+folder = getDirectory("Choose a Single Directory ");
+print ("Loading from : "+folder);
+
+// Load "Green", "FRET" and "Red" data
+if (File.exists(folder+"488G_488GMask.csv")) GREEN_lines = split(File.openAsString(folder+"488G_488GMask.csv"), "\n");
+
+if (File.exists(folder+"488R_488GMask.csv")) FRET_lines = split(File.openAsString(folder+"488R_488GMask.csv"), "\n");
+if (File.exists(folder+"488R-Corrected_488GMask.csv")) FRET_lines = split(File.openAsString(folder+"488R-Corrected_488GMask.csv"), "\n");
+
+if (File.exists(folder+"561R_488GMask.csv")) RED_lines = split(File.openAsString(folder+"561R_488GMask.csv"), "\n");
+
+labels = split(GREEN_lines[0], ",");
+nSpots = labels.length-2;
+nFrames= GREEN_lines.length-1;
+npts = nSpots*nFrames;
+
+if ((RED_lines.length != GREEN_lines.length) || (FRET_lines.length != GREEN_lines.length)) {
+	print ("ERROR...Unequal number of frames:");
+	print ("GREEN="+d2s(GREEN_lines.length,0)+" FRET="+d2s(FRET_lines.length,0)+" RED="+d2s(RED_lines.length,0) );
+	beep();
+	exit();
+}
+// dispatch the line-item data into the intensity arrays
+for (i=0; i<nFrames; i++) {
+	GREEN_items = split(GREEN_lines[i+1], ",");
+	FRET_items = split(FRET_lines[i+1], ",");
+	RED_items = split(RED_lines[i+1], ",");
+	tVals[i] = parseFloat(GREEN_items[1]);
+	for (j=0; j<nSpots; j++) {
+		jj = j*nFrames+i;
+			GREEN_inten[jj] = parseFloat(GREEN_items[j+2]);
+			FRET_inten[jj] = parseFloat(FRET_items[j+2]);
+			RED_inten[jj] = parseFloat(RED_items[j+2]);
+	}
+}
+
+}
+
+//========================
+function createControls(){
+//========================
+
+//===================== Defaults ====================
+//"Deriv"
+	mi[0] =1;     ma[0] = 20;   v[0]= deriv[chan];
+//"Smooth"
+	mi[1] =0;     ma[1] = 20;   v[1]= smth[chan];
+//"Thresh"
+	mi[2] =1;     ma[2] = 100;  v[2]= thresh[chan];
+//"Delta"
+	mi[3] =5;     ma[3] = 500;  v[3]= delta[chan];
+//"Min-Y"
+	mi[4] =-1000; ma[4] = 1000; v[4]= min[chan];
+//"Max-Y"
+	mi[5] =10;    ma[5] = 5000; v[5]= max[chan];
+//===================================================
+
+	if (isOpen(name)){
+		selectImage(name);
+		close();
+	}
+	call("ij.gui.ImageWindow.setNextLocation", 800, 100)
+	newImage(name,"rgb", width+w, h*sliders.length + h,1);
+	setOption("DisablePopupMenu", true);
+
+	for (i=0;i<s.length;i++) {
+		s[i] = width*(v[i]-mi[i])/(ma[i]-mi[i]);
+		drawSlider(i);
+	}
+
+	for (i=0;i<buttons.length;i++) {
+		bx[i] = (width /(buttons.length+1)) * (i+1) - wb/2;
+		by[i] = h*sliders.length;
+	}
+	for (i=0;i<buttons.length;i++) drawButton(i);
+
+}
+
+//======================
+function drawSlider(i) {
+//======================
+	setBatchMode(true);
+
+	setColor(255,255,255); fillRect(0,i*h, getWidth,h);
+	setLineWidth(5);
+	setColor(220,220,220); drawLine(0,i*h+h/2,getWidth,i*h+h/2);
+
+	setColor(0,0,0); fillRect(s[i]+1,i*h+1,w-2,h-2);
+	setColor(buttcol[chan]); fillRect(s[i]+2,i*h+2,w-4,h-4);
+
+	yoffset = 25;
+	offset = 25; setJustification("left"); prefix=""; suffix=" : "+sliders[i]; 
+	if (s[i]>getWidth/2) { offset = -5;setJustification("right"); prefix=sliders[i]+" : "; suffix="";}
+
+	setColor(0,0,0);
+	setFont("SansSerif",fSize, "bold");
+
+	v[i] = (s[i]/width)* (ma[i] - mi[i])+ mi[i];
+	v[i] = round (v[i]);
+	if (i>3) v[i] = round (v[i]/100)*100;
+	drawString (prefix+v[i]+suffix,s[i]+offset, i*h+yoffset);
+ 
+	setBatchMode(false);
+}
+
+
+//======================
+function drawButton(i) {
+//======================
+	setBatchMode(true);
+
+	setColor("black"); fillRect(bx[i]+2,by[i]+2,wb-4,h-4);
+	setColor(buttcol[i]); fillRect(bx[i]+3,by[i]+3,wb-6,h-6);
+
+	yoff = h/2+fSize/2+2;
+	xoff = wb/2; 
+
+	setJustification("center");
+	setColor(0,0,0); 
+	setFont("SansSerif",fSize, "bold");
+	for (j=0;j<buttons.length; j++) drawString (buttons[j], bx[j]+xoff, by[j]+yoff);
+	
+	if (i<3)setColor(255,255,255); 
+	drawString (buttons[i], bx[i]+xoff, by[i]+yoff);
+	setBatchMode(false);
+}
+
+//====================
+function loadImages(){
+//====================
+// Load and display the summary images saved with each data set
+
+if (File.exists(folder+"AVG_488G.jpg")){
+	open(folder+"AVG_488G.jpg");
+	run("Out [-]");
+}
+
+if (File.exists(folder+"AVG_488R.jpg")){
+	open(folder+"AVG_488R.jpg");
+	run("Out [-]");
+}
+
+if (File.exists(folder+"AVG_561R.jpg")){
+	open(folder+"AVG_561R.jpg");
+	run("Out [-]");
+}
+
+if (File.exists(folder+"488G_Photobleach.jpg")){
+	open(folder+"488G_Photobleach.jpg");
+	run("Out [-]");
+}
+
+if (File.exists(folder+"561R_Photobleach.jpg")){
+	open(folder+"561R_Photobleach.jpg");
+	run("Out [-]");
+}
+}
+
+

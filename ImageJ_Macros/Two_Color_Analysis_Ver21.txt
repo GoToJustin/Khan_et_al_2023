@@ -1,0 +1,1554 @@
+/* Justin's Macro to analyse two-camera // two-LASER image stacks
+
+	"Two_Color_Analysis_Ver21.txt"
+
+	Justin E. Molloy
+	Francis Crick Institute
+	justin.molloy@crick.ac.uk
+	27-Jan-2023
+
+Revisions:
+	Green Camera record is rescaled to improve pixel registration to Red camera
+	Query User if ALEx or MANUAL laser switching
+	Query user for bleach correction, cross-talk and close all files
+	The program also creates suitable output directories from a list of options
+	14-Oct: I tidied the code up by moving repeated tasks into functions.
+	19-Oct: Now has Z-profile routine when the run is completed
+		Writes out the runtime settings to the screen
+		Has the logic for the donor/acceptor FRET etc... but the function is not yet called"
+	20-Oct: Zooming windows! - 	left button zoom-in to chosen spot & display intensities
+						right button return to 100% zoom 
+		Output a summary data file (with means, min max etc....)
+		Save the "Log" window
+	22-Oct: Cross-correlation option
+	26-Oct: Batchmode processing
+		  photobleaching fits and plots
+	27-Oct: Corrected to deal with ALEx and non-ALEx files!
+	02-Nov: Option to change the default threshold percentile value
+	09-Nov: Tidied-up the RunLogFile format
+	09-Dec: Correction for November camera alignment twist problem (days 02->05 November incl.)
+		  Now performs bi-exponential fit to the photobleach decay curve.
+	23-Dec_2022: Now outputs the raw intensity data for each spot
+
+ALTERNATING LASER EXCITATION - "ALEx"
+=====================================
+Here, we assume that, throughout the record, the lasers (e.g. 488nm and 561nm) are switched on/off 
+alternately on a frame-by-frame basis i.e. 488nm, 561nm, 488nm, 561nm....etc.
+
+	1) Load up both the R&G camera stacks  
+	2) Move to the desired starting frame using the "G" camera stack (dump stuff at the beginning).
+	3) Select an ROI using the rectangle tool on Green record if desired. 
+	4) At the MENU prompt ensure that ALEx is selected
+	5) Ensure you have the correct starting and ending frames (you can dump stuff at the end if desired)
+	6) The macro will then DE-INTERLEAVE both the G and R stacks - "even" frames are 488nm excitation 
+         and "odd" frames are 561nm
+	7) You now have 4 stacks
+
+            488nm Ex      561nm Ex
+             "Even"        "Odd"
+             ______        ______
+            |      |      |      |
+     Green  | 488G |      | 561G |
+            |______|      |______|
+             ______        ______
+            |      |      |      |
+      Red   | 488R |      | 561R |
+            |______|      |______|
+
+
+MANUAL LASER CONTROL
+====================
+Here, we assume that, throughout the record, the lasers (e.g. 488nm and 561nm) are switched on/off MANUALLY
+i.e. 488nm (for a few seconds)....488nm+561nm (for a few seconds).... 561nm...(for a few seconds).....etc.
+
+	1) Load up both the R&G camera stacks  
+	2) Move to the desired starting frame using the "G" camera stack (dump stuff at the beginning).
+	3) Select an ROI using the rectangle tool on Green record if desired. 
+	4) At the MENU prompt ensure that ALEx is DE-SELECTED
+	5) Ensure you have the correct starting and ending frames (you can dump stuff at the end if desired)
+	6) The macro will now work through the G-camera stack and R-camera stack and append frames 
+         to either "488Ex", "561Ex" or "Both"
+	7) You now have up to 6 stacks.. depending on how the lasers were turned on/off
+
+             488nm Ex      561nm Ex     488 + 561
+             ______        ______        ______
+            |      |      |      |      |      |
+     Green  | 488G |      | 561G |      | BOTH |
+            |______|      |______|      |______|
+             ______        ______        ______
+            |      |      |      |      |      |
+      Red   | 488R |      | 561R |      | BOTH |
+            |______|      |______|      |______|
+
+*/
+
+// Define global variables (precede with "var" directive to make global)
+// if this program is called by the Batch Analysis macro then an "Argument" consisting of a comma
+// delimited string is passed..
+
+var defaultList="";
+var batchRun=false;
+	defaultList = getArgument();
+	if (defaultList!="") batchRun=true;
+
+// Set some environment variables
+run("Animation Options...", "speed=30");
+run("Set Measurements...", "redirect=None");
+
+// choose your fit function here=================
+// define the biexponential fit equation:
+  var Eqn = "y = a*exp(-b*x) + c*exp(-d*x) + e";
+  var initialGuesses = newArray(1000, 0.5, 200, 0.1, 500);
+  var monoOpt = false;
+
+// leave the lines above.. and uncomment these lines for mono-exponential
+//  Eqn = "Exponential with Offset";
+//  initialGuesses = (1000, 0.5, 500);
+//  monoOpt = true;
+
+// Cut-and-paste your favourite colours from: https://en.wikipedia.org/wiki/List_of_colors
+// Colors have the format e.g. "#568203" which is the hex code for "Avocado" green
+
+var colors = newArray("black", "blue", "cyan", "gray", "green", "lightGray", "magenta", "orange", "pink", "red", "yellow");
+
+// These are the optional output folders... edit as you wish!
+var outputFolders = newArray("Simulated");
+  outputFolders = Array.concat(outputFolders,"Beta_WT_Holo");
+  outputFolders = Array.concat(outputFolders,"Beta_K43R");
+  outputFolders = Array.concat(outputFolders,"Beta_T287A");
+  outputFolders = Array.concat(outputFolders,"Beta_T287D");
+  outputFolders = Array.concat(outputFolders,"Beta-T306_307A");
+  outputFolders = Array.concat(outputFolders,"Beta_T306_307A_T287A");
+  outputFolders = Array.concat(outputFolders,"Alpha_WT_Holo");
+  outputFolders = Array.concat(outputFolders,"Alpha_T286A");
+  outputFolders = Array.concat(outputFolders,"Alpha_T305_306A");
+  outputFolders = Array.concat(outputFolders,"Alpha_T305_306A_T286A");
+  outputFolders = Array.concat(outputFolders,"UnSorted");
+
+
+// Morphological Kernals for smoothing and spot detection
+var mGauss = "text1=[";
+  mGauss = mGauss +  "1 1 1 1 1 1 1\n";
+  mGauss = mGauss +  "1 2 2 2 2 2 1\n";
+  mGauss = mGauss +  "1 2 4 5 4 2 1\n";
+  mGauss = mGauss +  "1 2 5 6 5 2 1\n";
+  mGauss = mGauss +  "1 2 4 5 4 2 1\n";
+  mGauss = mGauss +  "1 2 2 2 2 2 1\n";
+  mGauss = mGauss +  "1 1 1 1 1 1 1 ]";
+
+// Morphological "Lapacian of a Gaussian" (i.e. 2nd derivative) for "Spot Finder"
+// See Justin's Excel file LOG.xls to "build yor own"
+
+var LoG = "text1=[";
+  LoG += " 0  0 -1 -1 -1 -1 -1  0  0\n";
+  LoG += " 0 -1 -1 -1 -1 -1 -1 -1  0\n";
+  LoG += "-1 -1 -1  0  1  0 -1 -1 -1\n";
+  LoG += "-1 -1  0  4  7  4  0 -1 -1\n";
+  LoG += "-1 -1  1  7 10  7  1 -1 -1\n";
+  LoG += "-1 -1  0  4  7  4  0 -1 -1\n";
+  LoG += "-1 -1 -1  0  1  0 -1 -1 -1\n";
+  LoG += " 0 -1 -1 -1 -1 -1 -1 -1  0\n";
+  LoG += " 0  0 -1 -1 -1 -1 -1  0  0 ]";
+
+// pixel calibrations.. these will be read from the green data file later
+var xCal=0.1;
+var yCal=0.1;
+var zCal=0.05;
+var unit="um";
+
+// frame info
+var fTime;
+var nSpots;
+var nRes;
+
+// width and height of overlay markers (in pixels)
+var wM=15;	
+var hM=15;
+
+// default spot size detection bounds
+var minSize = 9;
+var maxSize= 100;
+
+// default threshold percentile value (1->5% seems good) 
+var Gpercentile=1.0;
+var Rpercentile=2.0;
+
+// min and max correlation values
+var rawMinCor=0;
+var rawMaxCor=0;
+// normalised by gr or gg
+var minCorgr=0;
+var maxCorgr=0;
+
+var minCorgg=0;
+var maxCorgg=0;
+
+// various processing control "Options". Some are passed from the calling BATCH macro
+var redLeakage = 0.10;
+var redMaskOpt = true;
+var leakOpt = true;
+var gbleachOpt = true;
+var rbleachOpt = true;
+var flatFieldOpt = true;
+var closeAllOpt = true;
+var ALEx= true;
+var xCorrOpt= true;
+var spotAnalOpt= true;  // save: spot analysis output
+var op1Opt= true; 	// save: RunLogFile.txt
+var op2Opt= true; 	// save: Summary_Stats.csv
+var op3Opt= true; 	// save: xxxx_Bleach.csv
+var op4Opt= true; 	// save: xxxx_Photobleach.jpg
+
+
+// Error Check to that you have the correct images loaded-up!
+var GreenRec="";
+var RedRec="";
+
+// ======== Check that the user has the correct files loaded up =========
+list = getList("image.titles");
+if (list.length !=2){
+	print ("Currently you have "+toString(list.length)+" image(s) loaded");
+	for (i=0; i<list.length; i++) 	print (list[i]);
+	fileError();
+}
+
+for (i=0; i<list.length; i++) {
+	if (substring(list[i],  lengthOf(list[i]) - 1,  lengthOf(list[i]) ) == "G") {
+		GreenRec=list[i];
+		}
+ 	else if  (substring(list[i],  lengthOf(list[i]) - 1,  lengthOf(list[i]) ) == "R") { 
+		RedRec=list[i];
+		}
+}
+
+if (GreenRec=="" || RedRec=="")fileError();
+
+if ( !matches ( substring(RedRec,  0,  lengthOf(RedRec)-1) , substring(GreenRec,  0,  lengthOf(GreenRec)-1) ) ){
+	print ( substring(RedRec,  0,  lengthOf(RedRec)-1), "* is not equal to *",substring(GreenRec,  0,  lengthOf(GreenRec)-1));
+	fileError();
+}
+
+// Gregory's file format does not document ALEx (in a reliable way).
+// the "log.txt" file doesn't help much either!
+// Here is the "grunt" fix to detect alternating excitation!
+
+selectWindow(GreenRec);
+if ( parseInt(getInfo("gated"))) {
+	ALEx = true;
+} else {
+	makeRectangle(0, 0,511, 511);
+	run("Plot Z-axis Profile");
+	Plot.getValues(xpts,ypts);
+	close();
+	evensum=0; oddsum=0;
+	for (i=0;i<ypts.length-1;i+=2){
+		evensum=evensum+ypts[i];
+		oddsum=oddsum+ypts[i+1];
+	}
+	bright = evensum; dim=oddsum;
+	if (oddsum>evensum){
+		bright = oddsum; dim=evensum;
+	}
+	if ((bright/dim)>1.5) AlEx = true;
+	else ALEx = false;
+}
+
+//=========    Correct image shift and expansion on the Green vs Red cameras   ============
+selectWindow(GreenRec);
+getVoxelSize(xCal, yCal, zCal, unit); // retrieve the pixel calibration
+
+// Green image "magnify" and "shift" parameters.....
+	if (substring(GreenRec,4,6) != "00") {
+		newW=513; newH=518;
+		run("Size...", "width="+toString(newW)+" height="+toString(newH)+" depth="+toString(nSlices)+ "  average interpolation=Bilinear");
+		x0=1; y0=3;
+		Imcorr="Translate";
+         if ((substring(GreenRec,  2,  4) == "11") && (substring(GreenRec,  0,  2) != "06")){
+		  run("Rotate... ", "angle=-1.5 interpolation=Bilinear stack");
+		  x0=1; y0=1;
+            Imcorr="06_Nov_Twist";
+	    } 
+	   makeRectangle(x0, y0, 512,512);
+	   run("Crop");
+	   setVoxelSize(xCal, yCal, zCal, unit); // restore the pixel calibration
+	} else {
+      Imcorr= "None_Simulated_Data";
+     }
+   print ("Image_correction:"+Imcorr);
+
+
+// produce a merged image to validate the applied Shift, Expand and Rotate correction.
+	selectWindow(GreenRec);
+	run("Z Project...", "projection=[Average Intensity]");
+	run("Bandpass Filter...", "filter_large=40 filter_small=2 suppress=None tolerance=5");
+	//wait(1000);
+	run("Enhance Contrast", "saturated=0.35");
+	run("Green");
+	rename("AVG_Green");
+
+	selectWindow(RedRec);
+	run("Z Project...", "projection=[Average Intensity]");
+	run("Bandpass Filter...", "filter_large=40 filter_small=2 suppress=None tolerance=5");
+	//wait(1000);
+	run("Enhance Contrast", "saturated=0.35");
+	run("Red");
+	rename("AVG_Red");
+	run("Merge Channels...", "c1=AVG_Red c2=AVG_Green");
+//We now have a merged image called "RGB"... we'll save it later!
+
+
+// make slice start and end numbers global
+
+selectWindow(GreenRec);
+var startSlice = getSliceNumber();
+var endSlice = nSlices();
+
+if (!batchRun){
+
+//=======================================================
+// 			Put up a USER dialog box 
+//=======================================================
+	Dialog.create      ("The Main Menu - "        +       getInfo("user.name"));
+	Dialog.addChoice   ("Results Folder Name:",           outputFolders, outputFolders[0]);
+
+	Dialog.addNumber   ("Start Slice: ",                  startSlice);
+	Dialog.addNumber   ("End Slice: ",                    endSlice);
+	Dialog.addNumber   ("Green Threshold(%)",             Gpercentile);
+	Dialog.addNumber   ("Red Threshold(%)",               Rpercentile);
+	Dialog.addNumber   ("Min Spot Size (pixels)",         minSize);
+	Dialog.addNumber   ("Max Spot Size (pixels)",         maxSize);
+	Dialog.addNumber   ("Green->Red CrossTalk",           redLeakage);
+
+	Dialog.addCheckbox ("ALEx - Alternating Excitation?", ALEx);
+	Dialog.addCheckbox ("Remove Green->Red crosstalk?",   leakOpt);
+	Dialog.addCheckbox ("Correct Green Photobleaching?",  gbleachOpt);
+	Dialog.addCheckbox ("Correct Red Photobleaching?",  	 rbleachOpt);
+	Dialog.addCheckbox ("Flatten uneven field?",  	      flatFieldOpt);
+	Dialog.addCheckbox ("Do Red Mask?",                   redMaskOpt);
+	Dialog.addCheckbox ("Do cross-correlation?",          xCorrOpt);
+	Dialog.addCheckbox ("Close all images at the end?",   closeAllOpt);
+
+	Dialog.show	();
+
+// Read variables back from the menu - in the right order!
+	resultFolder = Dialog.getChoice();
+
+	startSlice =   Dialog.getNumber();
+	endSlice =     Dialog.getNumber();
+	Gpercentile =  Dialog.getNumber();
+	Rpercentile =  Dialog.getNumber();
+	minSize =      Dialog.getNumber();
+	maxSize =      Dialog.getNumber();
+	redLeakage =   Dialog.getNumber();
+
+	ALEx =         Dialog.getCheckbox();
+	leakOpt =      Dialog.getCheckbox();
+	gbleachOpt =   Dialog.getCheckbox();
+	rbleachOpt =   Dialog.getCheckbox();
+	flatFieldOpt=  Dialog.getCheckbox();
+	redMaskOpt =   Dialog.getCheckbox();
+ 	xCorrOpt =     Dialog.getCheckbox();
+	closeAllOpt =  Dialog.getCheckbox();
+
+} else {
+
+// retrieve all values from the BatchFile processing macro
+var	defaultVal =   split(defaultList,",");
+	ct=0;
+	resultFolder = defaultVal[ct++];
+	Gpercentile =  parseFloat(defaultVal[ct++]);
+	Rpercentile =  parseFloat(defaultVal[ct++]);
+	minSize =      parseInt(defaultVal[ct++]);
+	maxSize=       parseInt(defaultVal[ct++]);
+	redLeakage=    parseFloat(defaultVal[ct++]);
+	leakOpt=       parseInt(defaultVal[ct++]);
+	gbleachOpt=    parseInt(defaultVal[ct++]);
+	rbleachOpt =   parseInt(defaultVal[ct++]);
+	flatFieldOpt=  parseInt(defaultVal[ct++]);
+	redMaskOpt=    parseInt(defaultVal[ct++]);
+	xCorrOpt=      parseInt(defaultVal[ct++]);
+	spotAnalOpt=   parseInt(defaultVal[ct++]);
+	op1Opt=        parseInt(defaultVal[ct++]);	// save: RunLogFile.txt
+	op2Opt=        parseInt(defaultVal[ct++]);	// save: Summary_Stats.csv
+	op3Opt=        parseInt(defaultVal[ct++]); 	// save: xxxx_Bleach.csv
+	op4Opt=        parseInt(defaultVal[ct++]); 	// save: xxxx_Photobleach.jpg
+	if (Imcorr== "None_Simulated_Data"){ 
+		printSimParams(ct);
+	} 
+
+	
+	closeAllOpt=   1;					// close all files in BatchMode
+}
+
+
+// build the output path on the current windows USER Desktop
+	resultsPath = "C:\\Users\\"+getInfo("user.name")+"\\Desktop\\Two_Color";
+		File.makeDirectory(resultsPath);
+	resultsPath += "\\"+resultFolder;
+		File.makeDirectory(resultsPath);
+	resultsPath += "\\"+substring(GreenRec,0,lengthOf(GreenRec)-4);
+		File.makeDirectory(resultsPath);
+
+//=== make a few error checks === 
+	if (startSlice <1) startSlice = 1;
+	if (startSlice > endSlice) {
+		beep();
+		exit ("Start Slice can't be after endSlice");
+	}
+
+// check start slice is brighter than the next one.
+//=================================================
+	selectWindow(GreenRec);
+	setSlice(startSlice);
+	if (nSlices()>(startSlice+90)) setSlice(startSlice+30);
+	run("Set Measurements...", "redirect=None");
+	sliceMean=(getValue("Mean"));
+	setSlice(startSlice+1);
+	if (nSlices()>(startSlice+90)) setSlice(startSlice+31);
+	if (getValue("Mean")>sliceMean) {
+		startSlice = startSlice+1;
+	}
+	setSlice(startSlice);
+
+// number of frames (indexed from 1 not zero!) must be even
+//=========================================================
+	nFrames = endSlice - startSlice +1;
+	if (floor(nFrames/2)!=nFrames/2) {
+		endSlice-=1;
+		nFrames-=1;
+	}
+
+  	getDateAndTime(year, month, week, day, hour, min, sec, msec);
+
+	print ("UserName:" + getInfo("user.name"));
+	print ("Date:"+day+"/"+d2s(month+1,0)+"/"+year);
+  	print ("Time:"+hour+":"+min+":"+sec);
+	print ("RedRec:" + RedRec);
+	print ("GreenRec:" + GreenRec);
+//	print ("newW:" + newW);
+//	print ("newH:" + newH);
+//	print ("x0:" + x0);
+//	print ("y0:" + y0);
+	print ("ResFolder:" + resultsPath);
+	print ("st_Slice:" + startSlice);
+	print ("nd_Slice:" + endSlice);
+	print ("Green_Percentile:" + Gpercentile);
+	print ("Red_Percentile:" + Rpercentile);
+	print ("MinSpot:" + minSize);
+	print ("MaxSpot:" + maxSize);
+	print ("ALEx:"+ ALEx);
+	print ("red_Leakage:" + redLeakage);
+	print ("Leak_Correct:" + leakOpt);
+	print ("Green_Bleach:" + gbleachOpt);
+	print ("Red_Bleach:" + rbleachOpt);
+	print ("Flat_Field:" + flatFieldOpt);
+	print ("Red_Mask:" + redMaskOpt);
+	print ("X_correlation:" + xCorrOpt);
+	print ("Exp:"+getInfo("exp_ms"));
+	print ("Illum_time:"+getInfo("illum_time"));
+
+	var sizeRange = "size=" +minSize+ "-" +maxSize+ " pixel";
+
+//  CROP and CHOP the ROI for both stacks.
+//========================================
+	selectWindow(GreenRec);
+if (!batchRun){
+	getSelectionBounds(xoff, yoff, w, h);
+	makeRectangle(xoff,yoff,w,h);
+	run("Crop");
+}
+	run("32-bit");
+	run("Green");
+
+	selectWindow(RedRec);
+if (!batchRun){
+	makeRectangle(xoff, yoff, w, h);
+	run("Crop");
+}
+	run("32-bit");
+	run("Red");
+
+	fTime = Stack.getFrameInterval();
+	getVoxelSize(xCal, yCal, zCal, unit);
+
+// ALTERNATING LASER EXCITATION....
+//=================================
+if (ALEx) {
+	deInterleave(GreenRec, "488G", "561G");
+	deInterleave(RedRec, "488R", "561R");
+	selectWindow("561G");
+	close();
+} else {
+
+// MANUAL LASER CONTROL -  bit more complicated!
+//==============================================
+	selectWindow(GreenRec);
+	ct = startSlice;
+	setSlice(ct);
+	val = parseInt(getInfo("laser2")) + parseInt(getInfo("laser3"))*2;
+
+	if (val==0) val =1;
+
+// move through the stack and concatenate slices based on laser excitation. 
+// Do it "block by block" not "slice-by-slice" to save time
+// The code is more complicated but it speeds things up a lot!
+
+do {
+	st=ct;
+
+// find a block of one colour
+	do{
+		oldval = val;
+		ct+=1;
+		setSlice(ct);
+		val = parseInt(getInfo("laser2")) + parseInt(getInfo("laser3"))*2;
+
+	} while ((ct < endSlice) && (val==oldval));
+
+// add it to the relevant stack or create a new stack if not already present. 
+
+	if (ct < endSlice) ct-=1; // go back one frame for all but the last slice.
+
+// figure out the laser colour "channel"
+	if (oldval==0) str = "None";
+	if (oldval==1) str = "488";
+	if (oldval==2) str = "561";
+	if (oldval==3) str = "Both";
+
+	if (str != "None"){
+// duplicate the block
+	range = toString(st) +"-"+ toString(ct);
+	selectWindow(RedRec);
+	run("Duplicate...", "title=dummyR duplicate range=" +range);
+	selectWindow(GreenRec);
+	run("Duplicate...", "title=dummyG duplicate range=" +range);
+
+//concatenate or create new stacks
+ 	if (isOpen (str+"G")) {
+		run("Concatenate...", "  title=" +str+ "G image1=" +str+ "G image2=dummyG image3=[-- None --]");
+		run("Concatenate...", "  title=" +str+ "R image1=" +str+ "R image2=dummyR image3=[-- None --]");
+	}
+	else {
+		selectWindow("dummyG");
+		rename (str+"G");
+
+		selectWindow("dummyR");
+		rename (str+"R");
+	}
+	}
+	selectWindow(GreenRec);
+	ct+=1;
+
+   } while (ct<endSlice);
+
+}
+
+//=============================================================
+// if no "488G" record found then exit and close all windows
+// *** DEBUG ***
+if (isOpen("488G")){
+
+
+//======= Correct for "Green" leakage into "Red" Channel ======
+if (leakOpt) {
+	selectWindow("488G");
+	run("Duplicate...", "title=488Leakage duplicate");
+	run("Multiply...", "value=" +toString(redLeakage)+ " stack");
+	imageCalculator("Subtract stack", "488R","488Leakage");
+	selectWindow("488Leakage");
+	close();
+}
+
+//======== Initial effort to remove uneven illumination =======
+//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+if (flatFieldOpt){
+	selectWindow("488G");
+//	run("Bandpass Filter...", "filter_large=40 filter_small=3 suppress=None tolerance=5 process");
+//	wait(1000);
+	run("Subtract Background...", "rolling=100 sliding stack");
+
+	selectWindow("488R");
+//	run("Bandpass Filter...", "filter_large=40 filter_small=3 suppress=None tolerance=5 process");
+//	wait(1000);
+	run("Subtract Background...", "rolling=100 sliding stack");
+
+	if (isOpen("561R")){
+		selectWindow("561R");
+//		run("Bandpass Filter...", "filter_large=40 filter_small=3 suppress=None tolerance=5 process");
+//		wait(1000);
+		run("Subtract Background...", "rolling=100 sliding stack");
+	}
+}
+//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+//===================== create Spot Masks =====================
+// Make the binary mask from the stack average
+	createMask("488G",  "AVG_488GMask", Gpercentile);
+	createMask("488R",  "AVG_488RMask", Gpercentile);
+
+	if (isOpen("561R") && redMaskOpt) createMask("561R", "AVG_561RMask", Rpercentile);
+
+	flattenZ("488G","AVG_488GMask", gbleachOpt);
+	if (!leakOpt) flattenZ("488R","AVG_488RMask", gbleachOpt);
+	if (isOpen("561R") && redMaskOpt) flattenZ("561R", "AVG_561RMask", rbleachOpt);
+
+//======= create the tval "timing array" =========
+	selectWindow("488G");
+	fTime = Stack.getFrameInterval();
+var	maxFra = nSlices();
+
+	if (isOpen("561R")){
+ 		selectWindow("561R");
+		if(nSlices() > maxFra) maxFra = nSlices();
+	}
+
+// create a global array using 'var' directive
+
+var	tVal = newArray(maxFra);
+	for (i=0 ; i<maxFra; i+=1) tVal[i] = i*fTime;
+
+// 1) Use 488Gmask on 488G data
+//=============================
+	selectWindow("488G");
+	nFra=nSlices();
+	spotMeasure("488G", "AVG_488GMask");
+	IntDen488G = newArray(nRes);
+	nGspots= nSpots;
+
+	off488G =1000;
+	ReorderResults("488G_488GMask_GFP_Donors", IntDen488G, nFra, off488G);
+	updateResults();
+	if (spotAnalOpt) saveAs("Results", resultsPath+"\\488G_488GMask.csv");
+
+// 2) Use 488Gmask on 488R data
+//=============================
+	selectWindow("488R");
+	nFra=nSlices();
+	spotMeasure("488R", "AVG_488GMask");
+	IntDen488R = newArray(nRes);
+
+	off488R = 200;
+	if (leakOpt){
+		ReorderResults("488R_488GMask_FRET_Corrected", IntDen488R, nFra, off488R);
+		updateResults();
+		if (spotAnalOpt) saveAs("Results",  resultsPath+"\\488R-Corrected_488GMask.csv");
+	} 
+	else {
+		ReorderResults("488R_488GMask_FRET", IntDen488R, nFra, off488R);
+		updateResults();
+		if (spotAnalOpt) saveAs("Results",  resultsPath+"\\488R_488GMask.csv");
+	}
+
+// 3) Use 488Gmask on 561R data
+//===  ===  ===  ===  ===  ===  === 
+
+if (isOpen("561R")){
+	selectWindow("561R");
+	nFra=nSlices();
+	spotMeasure("561R", "AVG_488GMask");
+	IntDen561R = newArray(nRes);
+
+	off561R =200;
+	ReorderResults("561R_488GMask_Rhodamine_Acceptors", IntDen561R, nFra, off561R);
+	updateResults();
+	if (spotAnalOpt) saveAs("Results",  resultsPath+"\\561R_488GMask.csv");
+
+
+// 4) Use 561Rmask on 561R data (OPTIONAL)
+//=============================
+	if (redMaskOpt){
+		selectWindow("561R");
+
+// duplicate "561R" stack to "R561R" to display results
+		run("Duplicate...", "title=R561R duplicate");
+		selectWindow("R561R");
+		nFra=nSlices();
+		spotMeasure("R561R", "AVG_561RMask");
+		IntDenR561R = newArray(nRes);
+
+		offR561R =200;
+		ReorderResults("561R_561RMask_All_Rhodamines", IntDenR561R, nFra, offR561R);
+		updateResults();
+		if (spotAnalOpt) saveAs("Results",  resultsPath+"\\561R_561RMask.csv");
+
+		selectWindow("R561R");
+		run("Z Project...", "projection=[Average Intensity]");
+		run("Enhance Contrast", "saturated=0.5");
+		run("Red");
+	}
+//=============================
+
+	selectWindow("561R");
+	run("Z Project...", "projection=[Average Intensity]");
+	run("Enhance Contrast", "saturated=0.5");
+	run("Red");
+
+// end of "3&4" 561nm analysis
+
+ } 
+
+//===  ===  ===  ===  ===  ===  === 
+
+
+// Kill the results window 
+	if (isOpen("Results")) {
+		selectWindow("Results");
+		run("Close");
+	}
+
+// Enhance images - optionally "kill" them!
+	selectWindow("488G");
+	run("Z Project...", "projection=[Average Intensity]");
+	run("Enhance Contrast", "saturated=0.5");
+	run("Green");
+
+	selectWindow("488R");
+	run("Z Project...", "projection=[Average Intensity]");
+	run("Enhance Contrast", "saturated=0.5");
+	run("Red");
+
+
+// Clear RESULTS table and refill with the summary results
+	run("Clear Results");
+	updateResults();
+	setResult("Statistics"  ,  0 , "IntDen488G");
+	setResult("Statistics"  ,  1 , "IntDen488R");
+	setResult("Statistics"  ,  2 , "IntDen561R");
+	setResult("Statistics"  ,  3 , "IntDenR561R");
+
+	setResult("Statistics"  ,  4 , "Max488G");
+	setResult("Statistics"  ,  5 , "Max488R");
+	setResult("Statistics"  ,  6 , "Max561R");
+	setResult("Statistics"  ,  7 , "MaxR561R");
+
+	setResult("Statistics"  ,  8 , "Min488G");
+	setResult("Statistics"  ,  9 , "Min488R");
+	setResult("Statistics"  , 10 , "Min561R");
+	setResult("Statistics"  , 11 , "MinR561R");
+
+	setResult("Statistics"  , 12 , "Std488G");
+	setResult("Statistics"  , 13 , "Std488R");
+	setResult("Statistics"  , 14 , "Std561R");
+	setResult("Statistics"  , 15 , "StdR561R");
+
+	updateResults();
+
+// Re-write intensity data into Results table in desired format (remove plotting offset)
+	if (isOpen("561R")){
+		selectWindow("561R");
+		nFra561 = nSlices();
+	}
+
+	selectWindow("488G");
+	nFra488 = nSlices();
+
+	tmp = newArray(maxFra);
+	for (i=0; i<nGspots ; i+=1) {	
+		Spotname = "Spot" + toString(i);
+		setResult(Spotname , 3 , "");
+		setResult(Spotname , 7 , "");
+		setResult(Spotname , 11 , "");
+
+		ind=0;	
+		st = i*nFra488;
+		nd = st+nFra488;
+		tmp = Array.slice(IntDen488G, st, nd);
+		Array.getStatistics(tmp, min, max, mean, stdDev);
+		setResult(Spotname ,  ind+0  , mean-i*off488G);
+		setResult(Spotname ,  ind+4  , max-i*off488G);
+		setResult(Spotname ,  ind+8  , min-i*off488G);
+		setResult(Spotname ,  ind+12 , stdDev);
+
+		ind=1;	
+		tmp = Array.slice(IntDen488R, st, nd);	
+		Array.getStatistics(tmp, min, max, mean, stdDev);
+		setResult(Spotname ,  ind+0  , mean-i*off488R);
+		setResult(Spotname ,  ind+4  , max-i*off488R);
+		setResult(Spotname ,  ind+8  , min-i*off488R);
+		setResult(Spotname ,  ind+12 , stdDev);
+
+		ind=2;
+		if (isOpen("561R")){
+			st = i*nFra561;
+			nd = st+nFra561;
+			tmp = Array.slice(IntDen561R, st, nd);	
+			Array.getStatistics(tmp, min, max, mean, stdDev);
+			setResult(Spotname ,  ind+0  , mean-i*off561R);
+			setResult(Spotname ,  ind+4  , max-i*off561R);
+			setResult(Spotname ,  ind+8  , min-i*off561R);
+			setResult(Spotname ,  ind+12 , stdDev);
+		} else {
+			setResult(Spotname ,  ind+0  , "");
+			setResult(Spotname ,  ind+4  , "");
+			setResult(Spotname ,  ind+8  , "");
+			setResult(Spotname ,  ind+12 , "");
+		}
+
+		ind=3;
+		if (isOpen("561R")&&(redMaskOpt)){
+			st = i*nFra561;
+			nd = st+nFra561;
+			tmp = Array.slice(IntDenR561R, st, nd);	
+			Array.getStatistics(tmp, min, max, mean, stdDev);
+			setResult(Spotname ,  ind+0  , mean-i*offR561R);
+			setResult(Spotname ,  ind+4  , max-i*offR561R);
+			setResult(Spotname ,  ind+8  , min-i*offR561R);
+			setResult(Spotname ,  ind+12 , stdDev);
+		} else {
+			setResult(Spotname ,  ind+0  , "");
+			setResult(Spotname ,  ind+4  , "");
+			setResult(Spotname ,  ind+8  , "");
+			setResult(Spotname ,  ind+12 , "");
+		}
+	}
+
+
+	updateResults();
+	if (op2Opt) saveAs("Results",  resultsPath+"\\Summary_Stats.csv");
+
+if (xCorrOpt){
+	if(isOpen("AVG_488G") && isOpen("AVG_488R")){ 
+		crossCorrel("AVG_488G", "AVG_488R");
+		print("");
+		print("488G_X_488R_min:" + d2s(minCorgr,2));
+		print("488G_X_488R_max:" + d2s(maxCorgr,2));
+		print("");
+		print("488G_X_488R_RAWmin:" + d2s(rawMinCor,0));
+		print("488G_X_488R_RAWmax:" + d2s(rawMaxCor,0));
+
+		updateDisplay();
+		saveAs("tiff",  resultsPath+"\\488G_x_488R.tif");
+	}
+	if(isOpen("AVG_488G") && isOpen("AVG_561R")) {
+		crossCorrel("AVG_488G", "AVG_561R");
+		print("");
+		print("488G_X_561R_min:" + d2s(minCorgr,2));
+		print("488G_X_561R_max:" + d2s(maxCorgr,2));
+		print("");
+		print("488G_X_561R_min_gg:" + d2s(minCorgg,2));
+		print("488G_X_561R_max_gg:" + d2s(maxCorgg,2));
+		print("");
+		print("488G_X_561R_RAWmin:" + d2s(rawMinCor,0));
+		print("488G_X_561R_RAWmax:" + d2s(rawMaxCor,0));
+
+		updateDisplay();
+		saveAs("tiff",  resultsPath+"\\488G_x_561R.tif");
+	}
+	if(isOpen("AVG_488R") && isOpen("AVG_561R")) {
+ 		crossCorrel("AVG_488R", "AVG_561R");
+		print("");
+		print("488R_X_561R_min:" + d2s(minCorgr,2));
+		print("488R_X_561R_max:" + d2s(maxCorgr,2));
+		print("");
+		print("488R_X_561R_min_gg:" + d2s(minCorgg,2));
+		print("488R_X_561R_max_gg:" + d2s(maxCorgg,2));
+		print("");
+		print("488R_X_561R_RAWmin:" + d2s(rawMinCor,0));
+		print("488R_X_561R_RAWmax:" + d2s(rawMaxCor,0));
+
+		updateDisplay();
+		saveAs("tiff",  resultsPath+"\\488R_x_561R.tif");
+	}
+}
+
+	selectWindow("Log");
+	if (op1Opt)	saveAs("Text",  resultsPath+"\\RunLogFile.txt");
+
+	if (isOpen("RGB")){
+		selectWindow("RGB");
+		updateDisplay();
+		saveAs("jpeg", resultsPath+"\\RGB.jpg");
+		close();
+	}
+
+	if (!closeAllOpt){
+		liveZprofiles();
+	}
+
+
+// *** DEBUG *** There was no "488G" record found 
+} else {
+
+	print("=== No 488G record found - further analysis aborted ===");
+	selectWindow("Log");
+	if (op1Opt)	saveAs("Text",  resultsPath+"\\RunLogFile.txt");
+}
+
+
+// close everything ready for next run
+    if (isOpen("Results")) {
+         selectWindow("Results"); 
+         run("Close" );
+    }
+
+// clear the Log window and close it!
+    print("\\Clear");
+    if (isOpen("Log")) {
+         selectWindow("Log");
+         run("Close" );
+    }
+	while (nImages()>0) { 
+		selectImage(nImages()); 
+		close();
+	}
+
+// ================================================ end of main macro ===============================================
+
+// User defined functions......
+
+//=================================================
+function deInterleave(imStack, laser1Ex, laser2Ex){
+//=================================================
+	selectWindow(imStack);
+	sliceRange = " slices=" + toString(startSlice) + "-" + toString(endSlice);
+	sliceRange1 = " slices=" + toString(startSlice+1) + "-" + toString(endSlice);
+
+// Change "Properties" timing/frame rate values because of interlace
+	setVoxelSize(xCal, yCal, zCal*2, unit); // restore the pixel calibration
+	Stack.setFrameInterval(fTime*2);
+	Stack.setZUnit("s");
+
+// Deinterlace
+	run("Make Substack...", sliceRange + "-2"); // make substack using alternate frames 
+	rename (laser1Ex);
+
+	selectWindow(imStack);
+	run("Make Substack...", sliceRange1 + "-2");
+	rename (laser2Ex);
+}
+
+//==================================================
+function createMask(imStack, AVGimMask, percentile){
+//==================================================
+// String - imstack is a valid stack window title like "488G"
+// String - AVGimMask name of resultant binary mask like "AVG_488GMask"
+
+	selectWindow(imStack) ;
+	run("Z Project...", "projection=[Average Intensity]");
+	run("Convolve...", mGauss + " normalize");
+	run("Convolve...", LoG + " normalize");
+	rename (AVGimMask);
+
+// set threshold so only "percentile" number of pixel values are spots.			
+	thresh = getThresh(percentile);
+	getMinAndMax(min, max);
+	setThreshold(thresh, max);
+
+	if(!batchRun){
+	waitForUser("Waiting For User Input","Image->Adjust->Threshold\nAdjust Threshold with slider then press this OK button");
+	}
+
+	getThreshold(lower, upper);
+	print(AVGimMask+"_Thresh:"+d2s(lower,0));
+	setOption("BlackBackground", false);
+	run("Make Binary");
+}
+
+//===============================================
+function flattenZ(imStack, AVGimMask, bleachOpt){
+//===============================================
+// String - imstack is a valid stack window title like "488G"
+// String - AVGimMask is a binary mask like "AVG_488GMask"
+// Boolean - bleachOpt is the option to correct (or not)
+
+	selectWindow(AVGimMask);
+// remove all the bright spots and just measure the background
+	run("Duplicate...", "title=maskDilated");
+	run("Dilate");
+	run("Dilate");
+
+// invert to make bright spots = 0  and make background pixels = 1
+	run("Invert");
+	run("Macro...", "code=[if (v>0) v=1]");
+
+// fiddlefactor is the proportion of background pixels
+	ff = getValue("Mean");
+
+	selectWindow(imStack);
+	run("Duplicate...", "title=tmp duplicate");
+	imageCalculator("Copy stack", "tmp", "maskDilated");
+
+// make bright spot regions = 0 throughout the record!
+	imageCalculator("Multiply create stack", imStack, "tmp");
+
+	selectWindow("Result of "+imStack);
+	makeRectangle(0, 0, 511, 511);
+	run("Plot Z-axis Profile");
+	Plot.getValues(xpts,ypts);
+	close();
+
+	selectWindow("Result of "+imStack);
+	close();
+	selectWindow("maskDilated");
+	close();
+	selectWindow("tmp");
+	close();
+
+	run("Clear Results");
+	selectWindow(imStack);
+
+	setBatchMode(true);
+	for (i=0;i<nSlices();i++){
+		setSlice(i+1);
+		ypts[i]= ypts[i] / ff;
+
+// only do the subtraction if bleachOpt is true.. 
+		if (bleachOpt) {
+			run("Subtract...", "value="+toString(ypts[i])+" slice");
+		}
+
+	    	setResult("Time"  ,  i , xpts[i]);
+	    	setResult("Background"  ,  i , ypts[i]);
+	}
+	setBatchMode(false);
+	updateResults();
+
+if (op3Opt)	saveAs("Results", resultsPath+"\\"+imStack+"_Bleach.csv");
+	run("Clear Results");
+ 
+// draw & fit & save the photobleaching decay curve
+	Fit.doFit(Eqn, xpts, ypts, initialGuesses);
+
+// print out for mono exponential fit
+	if (monoOpt) {
+		print(imStack+"_A0:"  + d2s(Fit.p(0),0));
+		print(imStack+"_r0:"  + d2s(Fit.p(1),3));
+		print(imStack+"_off:" + d2s(Fit.p(2),0));
+	} else { 
+		// print out for bi-exponential fit
+		print(imStack+"_A0:"  + d2s(Fit.p(0),0));
+		print(imStack+"_r0:"  + d2s(Fit.p(1),3));
+		print(imStack+"_A1:"  + d2s(Fit.p(2),0));
+		print(imStack+"_r1:"  + d2s(Fit.p(3),3));
+		print(imStack+"_off:" + d2s(Fit.p(4),0));
+	}
+
+	Fit.plot();
+	Plot.setStyle(1,"red,white,1,Circle");
+	Plot.setStyle(0,"black,black,2,Line");
+	Plot.setXYLabels("Time(s)", "Intensity (arbs)");
+	Plot.setLegend(imStack+"Bleach", "top-right");
+
+	updateDisplay();
+	if (op4Opt)	saveAs("jpeg", resultsPath+"\\"+imStack+"_Photobleach.jpg");
+	close();
+}
+
+//======================================
+function spotMeasure(imStack, AVG_Mask){
+//======================================
+//String - imStack is the name of the stack window to be analysed
+//String - AVG_Mask is the name of the mask
+
+	selectWindow(imStack);
+	run("Duplicate...", "title=tmp duplicate");
+	imageCalculator("Copy stack", "tmp", AVG_Mask);
+	run("Convert to Mask", "method=Default background=Dark");
+
+	run("Set Measurements...", "area mean integrated centroid stack redirect="+imStack+" decimal=2");
+	run("Analyze Particles...", sizeRange + " clear include stack");
+
+	nRes = nResults();
+	nSpots = round(nRes / nSlices());
+	
+	selectWindow("tmp");
+	close();
+}
+
+//================== ReorderResults ================
+function ReorderResults(plotName, Inten, nFra, off){
+//==================================================
+// The correct image window must already be selected before calling this routine
+// String - plotName is the text used for the Plot Title
+// Array - Inten is the returned array for the intensity data from the Results Table
+// Variable - nFra is the number of frames (can be different for 561 and 488 excitation if manual) 
+// Variable - off is the plotting offset for each Spot-plot on the graphs
+
+// Write out the spot positions in the correct colors to match the later graphs
+
+	run("Remove Overlay");
+	setLineWidth(1);
+	setFont("SansSerif", 9);
+	for (j=0; j<nSpots; j+=1){
+		setColor(colors[ j % 11 ]);
+		if (colors[ j % 11] == "black") setColor("white");
+		x = getResult("X" ,   j ) / xCal;
+		y = getResult("Y" ,   j ) / yCal;
+
+		Overlay.drawLine(x-wM/2,y,x-wM/2+2,y);
+		Overlay.drawLine(x+wM/2,y,x+wM/2-2,y);
+
+		Overlay.drawLine(x,y-hM/2,x,y-hM/2+2);
+		Overlay.drawLine(x,y+hM/2,x,y+hM/2-2);
+
+		Overlay.drawEllipse(x-wM/2, y-hM/2, wM, hM);
+		Overlay.drawString(toString(j), x-wM/2, y-(hM/2+2));
+		Overlay.add();
+	}
+	Overlay.show();
+
+// load up the Intensity array - reorder the data and add offset for plotting 
+	ct=0;
+	for (i=0; i < nSpots; i+=1) {
+		for (j=0; j < nFra; j+=1) {
+			Inten [ct]   = getResult("RawIntDen"  ,   j  * nSpots + i) + (i * off);
+			ct+=1;
+		}
+	}
+
+// Clear RESULTS table and refill in desired format
+	run("Clear Results");
+	for (i=0; i<nFra ; i+=1) {
+	               setResult("Time"  ,  i , tVal[i]);
+	}
+
+// Re-write intensity data into Results table in desired format (remove plotting offset)
+	ct = 0;
+	for (i=0; i<nSpots ; i+=1) {	
+		Spotname = "Spot" + toString(i);			
+		for (j=0;  j < nFra ;  j+=1) {
+			setResult(Spotname ,  j  , Inten[ct] - (i*off));
+			ct+=1;
+		}
+	}
+if (!batchRun){
+// plots all the graphs
+	Plot.create(plotName,"Time (s)", "Intensity", tVal, Array.slice(Inten, 0));
+	for (j=1; j<nSpots;  j+=1) {
+		Plot.setColor (colors[ j % 11 ]);
+		Plot.add("line", tVal, Array.slice(Inten, j * nFra) );
+		Plot.add("circles", tVal, Array.slice(Inten, j * nFra) );
+	}
+
+	Plot.setColor (colors[0]);
+	Plot.add("circles", tVal, Array.slice(Inten,0) );
+	Plot.show();
+}
+}
+
+//====== getThresh =====
+function getThresh(pct){
+//======================
+// set the Threshold level so "pct" (percentile) pixels are above
+
+	limVal = (pct/100) * getWidth() * getHeight();
+	getStatistics(area, mean, min, max, std, histogram);
+	cumm = 0;
+	ct = histogram.length;
+	while ((cumm < limVal) && (ct > 0)) {
+		ct = ct-1; 			// = 255 on first pass
+		cumm = cumm + histogram[ct];
+	} 
+
+// 0th bin = min, 255th bin = max
+// bin interval == (max-min)/256
+// percentile threshold = binnumber * ((max-min) / 256) + min
+
+	thresh = ct * ((max-min) / 256)  + min;
+	return (thresh);
+}
+
+
+//===================
+function fileError(){
+//===================
+print ("Loaded image stacks must be a pair of  'xxxxx.gmG / xxxxx.gmR' records");
+beep();
+exit();
+}
+
+//=======================
+function liveZprofiles(){
+//=======================
+
+if (!isOpen("488G") || !isOpen("488R") || !isOpen("561R")) exit("images not ready");
+
+rightButton=4;
+leftButton=16;
+x2=-1; y2=-1; z2=-1; flags2=-1;
+
+selectWindow("561R");
+nFra561 = nSlices();
+
+selectWindow("488G");
+nFra488 = nSlices();
+
+width = getWidth();
+height = getHeight();
+fTime = Stack.getFrameInterval();
+
+zoom=400;
+
+maxSize = 50;
+smthwin = 9; 
+plotLive= false;
+
+var time2=getTime();
+
+maxFra=nFra488;
+if (maxFra < nFra561) maxFra= nFra561;
+
+var xpts = newArray(maxFra);
+for (i=0 ; i<maxFra; i+=1) xpts[i] = i*fTime;
+
+G488pts= newArray(nFra488);
+R488pts= newArray(nFra488);
+R561pts= newArray(nFra561);
+
+G488av= newArray(nFra488);
+R488av= newArray(nFra488);
+R561av= newArray(nFra561);
+
+selectWindow("488G");
+setLocation(1,1,620,620);
+run("Set... ", "zoom=100 x="+toString(width/2)+" y="+toString(height/2));
+
+selectWindow("488R");
+setLocation(525,1,620,620);
+run("Set... ", "zoom=100 x="+toString(width/2)+" y="+toString(height/2));
+
+selectWindow("561R");
+setLocation(525,600,620,620);
+run("Set... ", "zoom=100 x="+toString(width/2)+" y="+toString(height/2));
+
+if(isOpen("R561R")){
+  R561Rpts= newArray(nFra561);
+  R561Rav= newArray(nFra561);
+  selectWindow("R561R");
+  setLocation(1050,600,620,620);
+  run("Set... ", "zoom=100 x="+toString(width/2)+" y="+toString(height/2));
+}
+
+
+//print ("Macro-Started - Close 488G window to terminate");
+
+while (isOpen("488G")) {
+	setOption("DisablePopupMenu", true);
+
+// detect rightButton clicked
+	getCursorLoc(x, y, z, flags);
+
+// return to 100% zoom
+	if((flags&rightButton!=0)) {
+		selectWindow("488R");
+		run("Set... ", "zoom=100 x="+toString(width/2)+" y="+toString(height/2));
+		selectWindow("488G");
+		run("Set... ", "zoom=100 x="+toString(width/2)+" y="+toString(height/2));
+		selectWindow("561R");
+		run("Set... ", "zoom=100 x="+toString(width/2)+" y="+toString(height/2));
+		if(isOpen("R561R")) {
+ 		  selectWindow("R561R");
+		  run("Set... ", "zoom=100 x="+toString(width/2)+" y="+toString(height/2));
+		}
+	}
+
+// wait till leftButton Released
+	leftButRel = false;
+	while((flags&leftButton)!= 0) {
+		getCursorLoc(x, y, z, flags);
+		leftButRel=true;
+	}
+
+validImage = false;
+newPos = false;
+Im = getTitle();
+
+if (x!=x2 || y!=y2) newPos=true;
+if ((Im == "488G") || (Im =="488R") || (Im=="561R")) validImage=true;
+
+if (newPos && validImage && leftButRel){
+	w=1; h=1;
+	getSelectionBounds(x1,y1,w1,h1);
+
+	if ((w1!=width) && (h1!=height)){
+	  if (w1>maxSize) w1=maxSize;
+	  if (h1>maxSize) h1=maxSize;
+        x=x1; y=y1; w=w1; h=h1;
+	}
+
+	ymax= -50000;
+	ymin= 50000;
+
+	getZprofile("488G", G488pts, G488av, smthwin, x, y, w, h, zoom);
+	Array.getStatistics(G488pts, min, max, mean, stdDev);
+	if (max>ymax) ymax=max;
+	if (min<ymin) ymin=min;
+
+      getZprofile("488R", R488pts, R488av, smthwin, x, y, w, h, zoom);
+	Array.getStatistics(R488pts, min, max, mean, stdDev);
+	if (max>ymax) ymax=max;
+	if (min<ymin) ymin=min;
+
+      getZprofile("561R", R561pts, R561av, smthwin, x, y, w, h, zoom);
+	Array.getStatistics(R561pts, min, max, mean, stdDev);
+	if (max>ymax) ymax=max;
+	if (min<ymin) ymin=min;
+
+	if(isOpen("R561R")) {
+	  selectWindow("R561R");
+	  run("Set... ", "zoom="+toString(zoom)+" x="+toString(x)+" y="+toString(y));
+ 	}
+
+//=============================
+	Plot.create("Intensity vs Time","Time (s)", "Intensity");
+  	Plot.setLimits(0, maxFra*fTime, ymin, ymax);
+
+	Plot.setColor ("Red");
+	Plot.setLineWidth(2);
+	Plot.add("line", xpts, R561av);
+	Plot.setLineWidth(1);
+	Plot.add("circles", xpts, R561pts);
+
+	Plot.setColor ("Black");
+	Plot.setLineWidth(2);
+	Plot.add("line", xpts, R488av);
+	Plot.setLineWidth(1);
+	Plot.add("circles", xpts, R488pts);
+
+	Plot.setColor ("Green");
+	Plot.setLineWidth(2);
+	Plot.add("line", xpts, G488av);
+	Plot.setLineWidth(1);
+	Plot.add("circles", xpts, G488pts);
+	Plot.setFrameSize(410,410);
+	if (plotLive==false){
+		plotLive=true;
+		Plot.show();
+		setLocation(1,600,520,520);
+	} else {
+		Plot.update();
+	}
+
+
+//==============================
+	selectWindow(Im);
+	x2=x; y2=y; z2=z; flags2=flags; time2=getTime();
+}
+
+}
+
+setOption("DisablePopupMenu", false);
+}
+
+
+//============================================================
+function getZprofile(imName, vals, smth, win, x, y, w, h, zm){
+//============================================================
+      selectWindow(imName);
+	nFra= nSlices();
+
+	run("Set... ", "zoom="+toString(zm)+" x="+toString(x)+" y="+toString(y));
+      stx= x;
+      ndx= x+w;
+      sty= y;
+      ndy= y+h;
+	
+      for (z=0; z<nFra; z++) vals[z] = 0;
+
+      for (z=0; z<nFra; z++) {
+        setZCoordinate(z);
+        ct=0;
+        for (xco=stx; xco<ndx; xco++){
+          for (yco=sty; yco<ndy; yco++){
+            vals[z] = vals[z] + getPixel(xco, yco);
+            ct++;
+	    }
+        }
+       vals[z] = vals[z]/ct;
+       }
+
+      for (z=0; z<nFra; z++) smth[z] = 0;
+
+	for (i=0;i<(nFra-win);i++){
+		ct=0;
+		for (j=0;j<win;j+=1){
+			smth[i+win/2] = smth[i+win/2]+vals[i+j];
+			ct+=1;
+		}
+		smth[i+win/2]=smth[i+win/2]/ct;	
+	}
+	for (i=0;i<(win/2);i++){
+	  smth[i] = vals[i];
+	  smth[nFra-i-1] = vals[nFra-i-1];
+	}
+}
+
+//=============================
+function crossCorrel(Im1, Im2){
+//=============================
+
+/* This macro assumes you have two, equal size, 32bit images
+The perimeter pixel region is set to zero
+The images are cross-correlated and normalised by co-variance.
+
+The Pearson Correlation Coefficient "r" (ranges from -1 to 1)
+E.g. for cross-correlation of a red and a green image:
+
+         sum { (green[x,y] - gmean) * (red[x,y] - rmean) } 
+  r  = -----------------------------------------------------
+               std_dev {green} * std_dev {red}
+
+or.....
+
+         sum { (green[x,y] - gmean) * (red[x,y] - rmean) } 
+  r' = -----------------------------------------------------
+               std_dev {green} * std_dev {green} 
+
+*/
+
+// BoxSize (make it an even number!)
+dx=16;
+dy=16;
+
+// do this first or everything gets screwed-up!
+run("Set Measurements...", "redirect=None");
+
+// bandpass filtering flattens the image to reduce spurious spatial auto correlations
+selectWindow(Im1);
+run("Duplicate...", "title=g duplicate");
+w=getWidth();
+h=getHeight();
+getVoxelSize(xCal, yCal, zCal, unit); 
+run("Bandpass Filter...", "filter_large=40 filter_small=3 suppress=None tolerance=5");
+//wait(1000);
+
+selectWindow(Im2);
+run("Duplicate...", "title=r duplicate");
+run("Bandpass Filter...", "filter_large=40 filter_small=3 suppress=None tolerance=5");
+//wait(1000);
+
+// Create the output image
+newImage("gxr", "32-bit black", dx, dy, 1);
+setVoxelSize(xCal, yCal, zCal, unit);
+
+selectWindow("g");
+run("Enhance Contrast", "saturated=0.35");
+wait(100);
+updateDisplay();
+saveAs("jpeg", resultsPath+"\\"+Im1+".jpg");
+
+selectWindow("r");
+run("Enhance Contrast", "saturated=0.35");
+wait(100);
+updateDisplay();
+saveAs("jpeg", resultsPath+"\\"+Im2+".jpg");
+
+// Subtract the mean values {x(i) - xmean} & find StdDev
+// clear a bounding frame region
+selectWindow("g");
+mean=getValue("Mean");
+run("Subtract...", "value="+toString(mean));
+setColor(0);
+fillRect(0,0,w,dy/2);
+fillRect(0,0,dx/2,h);
+fillRect(0,h-dy/2,w,dy/2);
+fillRect(w-dx/2,0,dx/2,h);
+run("Select None");
+stdg = getValue("StdDev");
+
+// repeat for next image
+selectWindow("r");
+mean=getValue("Mean");
+run("Subtract...", "value="+toString(mean));
+setColor(0);
+fillRect(0,0,w,dy/2);
+fillRect(0,0,dx/2,h);
+fillRect(0,h-dy/2,w,dy/2);
+fillRect(w-dx/2,0,dx/2,h);
+run("Select None");
+stdr = getValue("StdDev");
+
+var_gr= stdg*stdr;
+var_gg= stdg*stdg;
+
+/* calculate the cross-correlation after relative shifting of the images
+	in a rectangular matrix:
+	1 pixel shift in "x" up to dx then 
+	shift down 1 pixel in "y" and repeat up to dy 
+*/
+
+// move to starting offset...
+selectWindow("r");
+run("Translate...", "x="+toString(-dx/2)+" y="+toString(-dy/2)+" interpolation=None");
+
+setBatchMode(true);
+for (y=0; y<dy;y+=1){
+	for (x=0; x<dx;x+=1){
+		imageCalculator("Multiply create 32-bit", "g","r");
+		mean=getValue("Mean");
+		close();
+		selectWindow("gxr");
+		setPixel(x,y,mean);
+		selectWindow("r");
+		run("Translate...", "x=1 y=0 interpolation=None");	// shift "r" image right by one pixel
+	}
+selectWindow("r");
+run("Translate...", "x="+toString(-dy)+" y=1  interpolation=None");		// go to start of next row
+}
+setBatchMode(false);
+
+// Normalise - divide by co-variance of master images
+selectWindow("gxr");
+
+rename(Im1+"x"+Im2);
+rawMaxCor = getValue("Max");
+rawMinCor = getValue("Min");
+
+maxCorgg = rawMaxCor/var_gg;
+minCorgg = rawMinCor/var_gg;
+
+maxCorgr = rawMaxCor/var_gr;
+minCorgr = rawMinCor/var_gr;
+
+// create the normalised image using co-variance
+run("Divide...", "value="+toString(var_gr)); 
+
+// or create the normalised image using green channel variance only
+//run("Divide...", "value="+toString(var_gg));
+
+if(!batchRun){
+	run("AFM LUT");	
+	run("Enhance Contrast", "saturated=0.35");
+	for (i=0;i<8;i+=1)run("In [+]");
+}
+
+selectWindow("g");
+close;
+
+selectWindow("r");
+close;
+
+}
+
+//============================
+function printSimParams(ct){
+//============================
+//print("Simulation Parameters:");
+//print("Protein_Settings");
+print("CaMKII_stoichiometry:",defaultVal[ct++]);
+print("CaM_stoichiometry:",defaultVal[ct++]);
+//print("");
+print("CaMKIICaM_complexes:",defaultVal[ct++]);
+print("Free_CaMKIIs:",defaultVal[ct++]);
+print("Free_CaMs:",defaultVal[ct++]);
+print("Diffusion_pixel_per_frame:",defaultVal[ct++]);
+//print("");
+//print("Fluorophore_Settings");
+print("Green_counts_per_fluor:",defaultVal[ct++]);
+print("Red_counts_per_fluor:",defaultVal[ct++]);
+print("Green_Bleaching_rate:",defaultVal[ct++]);
+print("Red_Bleaching_rate:",defaultVal[ct++]);
+print("FRET_efficiency:",defaultVal[ct++]);
+//print("");
+//print("Camera_Settings");
+print("G_Camera_noise:",defaultVal[ct++]);
+print("R_Camera noise:",defaultVal[ct++]);
+print("Number_of_frames:",defaultVal[ct++]);
+print("Green_Red_leakage:",defaultVal[ct++]);
+//print("");
+print("File_number:",defaultVal[ct++]);
+}
+
+
+

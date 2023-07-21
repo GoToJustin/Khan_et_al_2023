@@ -1,0 +1,515 @@
+/* Simulate diffusing molecules with noise
+
+	"Simulate_CamKII_Cam_21.txt"
+
+	Justin E. Molloy
+	Francis Crick Institute
+	justin.molloy@crick.ac.uk
+	27-Jan-2023
+
+	This version computes the integrated intensity correctly
+	It should also produces "GMV format" files and also the "log.txt"
+	file so that it interfaces with the batch processing macro
+
+*/
+
+//You must use an up-to-date version of ImageJ
+
+requires("1.53s");
+cleanWindows();
+
+// set up various parameters for the simulation.........
+// set the stack dimensions
+var w= 512;
+var h= 512;
+var nFrames= 200;
+var nmPix= 100; // 100nm per pixel
+var tperFrame= 0.1; // = 10fps
+
+// set camera noise level
+GcamNoise= 23;
+RcamNoise= 23;
+
+// set molecule diffusion speed - it can be zero!
+step= 0;
+
+// Set the starting number of molecules (and Green-Red dimers)
+Gspots=100;
+Rspots=100;
+GRspots=50;
+
+// set fluorophore peak intensity, FRET efficieny and cross-talk (leakage)
+Rinten= 250; 
+Ginten= 250;
+leakage= 0.1;   //10%
+FRET= 0;     //50% FRET 
+
+// set number of flurophores per molecule
+nFluorG= 14;   // 7 subunits???
+nFluorR= 14;    // all occupied by CaMs!
+
+// set photobleaching rate per second
+gBleach =0.1;
+rBleach =0.05;
+
+getDateAndTime(year, month, dayOfWeek, dayOfMonth, hour, minute, second, msec);
+month+=1; // months are zero-indexed
+dd=d2s(dayOfMonth,0);
+mm=d2s(month,0);
+yyyy=d2s(year,0);
+
+// OVERIDE!!!! yy=0000 means its a simulation!
+yyyy="0000";
+yy=yyyy.substring(2,4);
+
+if (dd.length<2) dd="0"+dd;
+if (mm.length<2) mm="0"+mm;
+
+hh=d2s(hour,0);
+mn=d2s(minute,0);
+ss=d2s(second,0);
+if (hh.length<2) hh="0"+hh;
+if (mn.length<2) mn="0"+mn;
+if (ss.length<2) ss="0"+mn;
+
+IDnum=1;
+
+do{
+closeOpt=true;
+//=======================================================
+//          Put up a USER dialog box 
+//=======================================================
+   Dialog.create    ("The Main Menu");
+   Dialog.setInsets(0, 0, 0); Dialog.addMessage("Protein Settings:",16,"red");
+   Dialog.addNumber ("CaMKII stoichiometry: ",     nFluorG);
+   Dialog.addNumber ("CaM stoichiometry: ",        nFluorR);
+
+   Dialog.addNumber ("CaMKII.CaM complexes",       GRspots);
+   Dialog.addNumber ("Free CaMKIIs",               Gspots);
+   Dialog.addNumber ("Free CaMs",                  Rspots);
+   Dialog.addNumber ("Diffusion pixel/frame",      step);
+
+   Dialog.setInsets(0, 0, 0); Dialog.addMessage("Fluorophore Settings:",16,"red");
+
+   Dialog.addNumber ("Green counts per fluor",     Ginten);
+   Dialog.addNumber ("Red counts per fluor",       Rinten);
+   Dialog.addNumber ("Green Bleaching rate s-1",   gBleach);
+   Dialog.addNumber ("Red Bleaching rate s-1",     rBleach);
+   Dialog.addNumber ("FRET efficiency",            FRET);
+
+   Dialog.setInsets(0, 0, 0); Dialog.addMessage("Camera Settings:",16,"red");
+   Dialog.addNumber ("G-Camera noise: ",           GcamNoise);
+   Dialog.addNumber ("R-Camera noise: ",           RcamNoise);
+   Dialog.addNumber ("Number of frames: ",         nFrames);
+   Dialog.addNumber ("Green->Red leakage: ",       leakage);
+
+   Dialog.setInsets(0, 0, 0); Dialog.addMessage("Simulation ID:",16,"red");
+   Dialog.addNumber ("File number 0->999999: ",    IDnum);
+   Dialog.addMessage("Frame size: "+d2s(w,0)+"x"+d2s(h,0)+"pixels\n"+d2s(nmPix,0)+"nm per pixel\nRecorded at "+d2s(1/tperFrame,1)+"fps");
+
+   Dialog.addCheckbox ("Close unused images?",     closeOpt);
+
+   Dialog.show ();
+
+// Read variables back from the menu - in the right order!
+
+   nFluorG  =  Dialog.getNumber();
+   nFluorR  =  Dialog.getNumber();
+
+   GRspots  =  Dialog.getNumber();
+   Gspots   =  Dialog.getNumber();
+   Rspots   =  Dialog.getNumber();
+   step     =  Dialog.getNumber();
+
+   Ginten   =  Dialog.getNumber();
+   Rinten   =  Dialog.getNumber();
+   gBleach  =  Dialog.getNumber();
+   rBleach  =  Dialog.getNumber();
+   FRET     =  Dialog.getNumber();
+
+   GcamNoise=  Dialog.getNumber();
+   RcamNoise=  Dialog.getNumber();
+   nFrames  =  Dialog.getNumber();
+   leakage  =  Dialog.getNumber();
+   IDnum    =  Dialog.getNumber();
+   closeOpt =  Dialog.getCheckbox();
+
+// create output file basename
+if (IDnum<1) IDnum=1;
+if (IDnum>99) IDnum=99;
+
+// note yy="00" see above - means its a simulation!
+fname=dd+mm+yy+"r0";
+fname= fname.substring(0,9-lengthOf(d2s(IDnum,0)))+d2s(IDnum,0)+".gm";;
+
+// create and initialise some arrays to keep track of molecule positions and number of fluorophores
+oldGx=newArray(Gspots);
+oldGy=newArray(Gspots);
+Gfluor=newArray(Gspots);
+for (i=0; i<Gspots; i++) Gfluor[i]= nFluorG;
+
+oldRx=newArray(Rspots);
+oldRy=newArray(Rspots);
+Rfluor=newArray(Rspots);
+//for (i=0; i<Rspots; i++) Rfluor[i]= nFluorR;
+for (i=0; i<Rspots; i++) Rfluor[i]= 1; // free Cams are monomers
+
+oldGRx=newArray(GRspots);
+oldGRy=newArray(GRspots);
+GfluorGR=newArray(GRspots);
+RfluorGR=newArray(GRspots);
+for (i=0; i<GRspots; i++){ 
+   GfluorGR[i]= nFluorG;
+   RfluorGR[i]= nFluorR;
+}
+
+
+// Now start the simulation.........
+
+// Create the stacks and fill with background noise
+newImage("488G", "16-bit black", w, h, nFrames);
+   run("Macro...", "code=v=random(\"gaussian\")*"+d2s(GcamNoise,3)+"+"+d2s(3*GcamNoise,3)+" stack");
+
+newImage("561G", "16-bit black", w, h, nFrames);
+   run("Macro...", "code=v=random(\"gaussian\")*"+d2s(RcamNoise/3,3)+"+"+d2s(RcamNoise,3)+" stack");
+
+newImage("561R", "16-bit black", w, h, nFrames);
+   run("Macro...", "code=v=random(\"gaussian\")*"+d2s(RcamNoise,3)+"+"+d2s(3*RcamNoise,3)+" stack");
+
+newImage("488R-FRET", "16-bit black", w, h, nFrames);
+   run("Macro...", "code=v=random(\"gaussian\")*"+d2s(GcamNoise/3,3)+"+"+d2s(GcamNoise,3)+" stack");
+
+// Randomly distribute Green-labelled molecules
+for (j=0;j<Gspots;j++){
+   oldGx[j] = w*random();
+   oldGy[j] = h*random();
+}
+// Randomly distribute Green-Red dimers 
+for (j=0;j<GRspots;j++){
+   oldGRx[j] = w*random();
+   oldGRy[j] = h*random();
+}
+// Randomly distribute Red-labelled molecules
+for (j=0;j<Rspots;j++){
+   oldRx[j] = w*random();
+   oldRy[j] = h*random();
+}
+
+setBatchMode(true);
+
+// Paint the molecules on the different cameras and iterate through all frames
+
+for (i =1 ; i<=nFrames; i+=1) { 
+
+//move all stacks to next frame
+selectWindow("488G");
+setSlice(i);
+selectWindow("488R-FRET");
+setSlice(i);
+selectWindow("561R");
+setSlice(i);
+
+// figure out how many fluorophores bleach 
+for (j=0; j<Gspots; j++) {
+   if ((random <(gBleach*Gfluor[j]*tperFrame)) && (Gfluor[j]>0)) Gfluor[j]--;
+}
+for (j=0; j<Rspots; j++) {
+   if ((random <(rBleach*Rfluor[j]*tperFrame)) && (Rfluor[j]>0)) Rfluor[j]--;
+}
+for (j=0; j<GRspots; j++) {
+   if ((random <(gBleach*GfluorGR[j]*tperFrame)) && (GfluorGR[j]>0)) GfluorGR[j]--;
+   if ((random <(rBleach*RfluorGR[j]*tperFrame)) && (RfluorGR[j]>0)) RfluorGR[j]--;
+}
+
+// Green freeCamKII spots on 488G stack + Leakage on 488R-FRET
+// =========================================================
+for (j=0;j<Gspots;j++){
+   x=oldGx[j]+(random-0.5)*step;
+   if (x>w) x=0;
+   if (x<0) x=w;  
+   y=oldGy[j]+(random-0.5)*step;
+   if (y>h) y=0;
+   if (y<0) y=h;
+
+   selectWindow("488G");
+   inten= Ginten*Gfluor[j]; // if monomers when alone, remove the "*Gfluor[j]";
+   PlotGauss  (x, y, inten);
+
+// LEAKAGE on 488R stack
+   selectWindow("488R-FRET"); 
+   inten= inten * leakage;
+   PlotGauss  (x, y, inten);
+
+   oldGx[j]=x;
+   oldGy[j]=y;    
+}
+
+
+// Green+Red molecules - same x,y location on all three stacks
+// ===========================================================
+
+// G-R dimer spots on 488G stack
+// =============================
+
+for (j=0;j<GRspots;j++){
+   x=oldGRx[j]+(random-0.5)*step;
+   if (x>w) x=0;
+   if (x<0) x=w;
+   y=oldGRy[j]+(random-0.5)*step;
+   if (y>h) y=0;
+   if (y<0) y=h;
+   inten= (Ginten * GfluorGR[j]) - (FRET * minOf(RfluorGR[j], GfluorGR[j])* Ginten);
+   selectWindow("488G");
+   PlotGauss  (x, y, inten);
+
+   inten=inten*leakage;
+   selectWindow("488R-FRET");
+   PlotGauss  (x, y, inten);
+
+   oldGRx[j]=x;
+   oldGRy[j]=y;      
+}
+
+// G-R dimer spots on 488R-FRET stack = FRET channel
+// =================================================
+selectWindow("488R-FRET");
+for (j=0;j<GRspots;j++){
+   x=oldGRx[j];   
+   y=oldGRy[j];
+   inten= FRET * minOf(RfluorGR[j], GfluorGR[j]) * Rinten;
+   PlotGauss  (x, y, inten);
+}
+
+// G-R dimer spots on 561R stack
+// ==============================
+selectWindow("561R");
+for (j=0;j<GRspots;j++){
+   x=oldGRx[j];   
+   y=oldGRy[j];
+   inten= Rinten*RfluorGR[j];
+   PlotGauss  (x, y, inten);  
+}
+// ===========================================================
+
+// Red monomer spots on 561R stack
+// =======================
+selectWindow("561R");
+for (j=0;j<Rspots;j++){
+   x=oldRx[j]+(random-0.5)*step;
+   if (x>w) x=0;
+   if (x<0) x=w;  
+   y=oldRy[j]+(random-0.5)*step;
+   if (y>h) y=0;
+   if (y<0) y=h;
+   inten= Rinten*Rfluor[j];
+   PlotGauss  (x, y, inten);
+   oldRx[j]=x;
+   oldRy[j]=y;    
+}
+
+}
+
+setBatchMode(false);
+
+// Tweak the movies so you can inspect them easily
+selectWindow("561R");
+run("Red");
+setMinAndMax(0,RcamNoise*6);
+
+selectWindow("488R-FRET");
+run("Magenta");
+setMinAndMax(0,RcamNoise*2);
+
+selectWindow("488G");
+run("Green");
+setMinAndMax(0,GcamNoise*6);
+
+run("Merge Channels...", "c1=561R c2=488G keep");
+rename ("RGB");
+//run("Merge Channels...", "c1=561R c2=488G c2=488R keep");
+
+// - create output files and append logfile info...
+
+// build the output path on the current windows USER Desktop
+resultsPath = "C:\\Users\\"+getInfo("user.name")+"\\Desktop\\Two_Color\\";
+File.makeDirectory(resultsPath);
+resultsPath = "C:\\Users\\"+getInfo("user.name")+"\\Desktop\\Two_Color\\Simulations\\";
+File.makeDirectory(resultsPath);
+resultsPath = "C:\\Users\\"+getInfo("user.name")+"\\Desktop\\Two_Color\\Simulations\\"+dd+mm+yy+"\\";
+File.makeDirectory(resultsPath);
+ 
+/* log file formmat for batch processing:
+
+$Date:31/10/2021 $Time:16:56:01 $Number:1 $Illumination: $Intensity:15%/15%$
+ $Camera:Andor-iXon $RecType:Contin $Interval:---- $FramesInSeq:-- $Exposure:96ms $Gain:255$
+ $CellType:NA $Object:V-CaMKbetaK43R/R-CAM $Medium:ABG- $Temp:23.2$
+ $Note:$
+#
+$Date:31/10/2021 ...etc
+*/
+
+txt="\r\n";
+txt+="$Date:"+dd+"/"+mm+"/"+yyyy+" $Time:"+hh+":"+mn+":"+ss+" $Number:"+d2s(IDnum,0)+" $Illumination: $Intensity:15%/15%$\r\n";
+txt+=" $Camera:Andor-iXon $RecType:AlEx $Interval:---- $FramesInSeq:-- $Exposure:"+d2s(tperFrame*1000,0)+"ms $Gain:255$\r\n";
+txt+=" $CellType:NA $Object:Simulation $Medium:ABG- $Temp:23.2$\r\n";
+txt+=" $Note:"+d2s(nFluorG,0)+","+d2s(nFluorR,0)+","+d2s(GRspots,0)+","+d2s(Gspots,0)+","+d2s(Rspots,0)+","+d2s(step,0)+",";
+txt+= d2s(Ginten,0)+","+d2s(Rinten,0)+","+d2s(gBleach,3)+","+d2s(rBleach,3)+","+d2s(FRET,3)+","+d2s(GcamNoise,0)+",";
+txt+= d2s(RcamNoise,0)+","+d2s(nFrames,0)+","+d2s(leakage,3)+","+d2s(IDnum,0)+"$\r\n";
+txt+="#";
+
+File.append(txt, resultsPath+"log.txt")
+
+// Create interleaved Green Camera Record for Two_color_analysis program
+run("Stack Interleaver", "stack=488G stack_0=561G");
+run("Green");
+rename(fname+"G");
+Stack.setFrameRate(1/tperFrame);
+Stack.setFrameInterval(tperFrame) ;
+setVoxelSize(nmPix/1000, nmPix/1000, tperFrame, "um");
+addSliceLabels();
+
+if (File.exists(resultsPath+fname+"G")) File.delete(resultsPath+fname+"G");
+run("GMV Writer", "save="+resultsPath+fname+"G");
+if (closeOpt) close();
+
+// Create interleaved Red Camera Record
+run("Stack Interleaver", "stack=488R-FRET stack_0=561R");
+run("Red");
+rename(fname+"R");
+Stack.setFrameRate(1/tperFrame);
+Stack.setFrameInterval(tperFrame) ;
+setVoxelSize(nmPix/1000, nmPix/1000, tperFrame, "um");
+addSliceLabels();
+
+if (File.exists(resultsPath+fname+"R")) File.delete(resultsPath+fname+"R");
+run("GMV Writer", "save="+resultsPath+fname+"R");
+if (closeOpt) close();
+
+
+if (closeOpt) cleanWindows();
+IDnum++;
+} while (closeOpt);
+
+// ===================== E N D =====================
+
+
+//=================================
+function PlotGauss(xG, yG, intens){
+//=================================
+
+// intens = integral intensity 
+// ampl = intens /(xwG*ywG*Pi)
+
+// waist-size 3 pixels (300nm) giving sd= 1.5 pixel for x and y
+xwG = 1.5;
+ywG = 1.5;
+
+ampl = intens /(xwG * ywG * PI);
+
+// go out to 3SDs
+xmin = round(xG - xwG*3);
+xmax = round(xG + xwG*3);
+ymin = round(yG - ywG*3);
+ymax = round(yG + ywG*3);
+
+   for (xi = xmin; xi <= xmax ; xi+=1) {
+      xpow = (xG-xi) / xwG;
+      xpow = xpow * xpow;
+      for (yi = ymin; yi  <=ymax; yi+=1) {
+         ypow = (yG-yi) / ywG;
+         ypow = ypow * ypow;
+         val = ampl * exp( -1 * (xpow + ypow));
+         val = val + sqrt(val) * random("gaussian");
+         val = val + getPixel(xi, yi);
+         setPixel(xi, yi, val);
+      }
+   }
+
+}
+//======================
+function cleanWindows(){
+//======================
+// close any windows left over from a previous run.
+
+if (isOpen("488G")){
+   selectWindow("488G");
+   close();
+}
+if (isOpen("488R-FRET")){
+   selectWindow("488R-FRET");
+   close();
+}
+if (isOpen("561R")){
+   selectWindow("561R");
+   close();
+}
+if (isOpen("561G")){
+   selectWindow("561G");
+   close();
+}
+if (isOpen("RGB")){
+   selectWindow("RGB");
+   close();
+}
+
+}
+
+//========================
+function addSliceLabels(){
+//========================
+// note the format here is critcal "keyword: value"... note colon space!
+// otherwise ImageJ "getInfo" command doesn't work properly!
+
+cr="\n";
+baseLabel= "x_nm_pixels: "	+ d2s(nmPix,1)+cr;
+baseLabel+= "y_nm_pixels: "	+ d2s(nmPix,1)+cr;
+baseLabel+= "igain: "		+ d2s(255,0)+cr;
+baseLabel+= "vgain: "		+ d2s(0,0)+cr;
+baseLabel+= "bit_pix: "		+ d2s(16,0)+cr;
+baseLabel+= "bin: "			+ d2s(1,0)+cr;
+baseLabel+= "byte_info: "	+ d2s(200,0)+cr;
+
+// parseout the "byte info" 200 = "1100 1000"
+baseLabel+= "laser1: "		+ d2s(0,0) +cr;
+baseLabel+= "laser2: "		+ d2s(0,0) +cr;
+baseLabel+= "laser3: "		+ d2s(0,0) +cr;
+baseLabel+= "TIRF: "		+ d2s(1,0) +cr;
+baseLabel+= "median: "		+ d2s(0,0) +cr;
+baseLabel+= "neut_density: "	+ d2s(0,0) +cr;
+baseLabel+= "gated: "		+ d2s(1,0) +cr;
+baseLabel+= "new_format: "	+ d2s(1,0) +cr;
+
+baseLabel+= "add_info: "	+ d2s(1,0)+cr;
+baseLabel+= "laser_power: "	+ d2s(50,0)+cr;
+baseLabel+= "temperature: "	+ d2s(230,0)+cr; // gmv writer divides by 100
+baseLabel+= "illum_time: "	+ d2s(tperFrame*1000-2,0)+cr;
+baseLabel+= "stageXnm: "	+ d2s(0,0)+cr;
+baseLabel+= "stageYnm: "	+ d2s(0,0)+cr;
+baseLabel+= "focusZnm: "	+ d2s(0,0)+cr;
+baseLabel+= "int1: "		+ d2s(0,0)+cr;
+baseLabel+= "int2: "		+ d2s(0,0)+cr;
+baseLabel+= "int3: "		+ d2s(0,0)+cr;
+baseLabel+= "float1: "		+ d2s(63.0,2)+cr;
+baseLabel+= "float2: "		+ d2s(0,2)+cr;
+baseLabel+= "float3: "		+ d2s(0,2)+cr;
+baseLabel+= "float4: "		+ d2s(0,2)+cr;
+
+// loop through all frames adding labels with correct times
+for (i=0; i<nSlices(); i++){
+   fr_time = tperFrame*i;
+   sliceLabel = d2s(fr_time,3) + " s  ALEx" +cr; // first line displayed on frame
+   sliceLabel+= "filetype: "	+ "GMV"+cr;
+   sliceLabel+= "time: "	+ d2s(fr_time,3)+cr;
+   sliceLabel+= "leftx: "	+ d2s(0,0)+cr;
+   sliceLabel+= "width: "	+ d2s(w,0)+cr;
+   sliceLabel+= "topy: "	+ d2s(0,0)+cr;
+   sliceLabel+= "height: "	+ d2s(h,0)+cr;
+   sliceLabel+= "exp_ms: "	+ d2s(tperFrame*1000,0)+cr;
+   sliceLabel+= "fr_size: "	+ d2s(w*h,0)+cr;
+   sliceLabel+= "fr_time: "	+ d2s(fr_time*1000,0)+cr;
+   sliceLabel+= baseLabel;
+
+   Property.setSliceLabel(sliceLabel,i+1); // note frame indexing starts at "1"
+}
+
+}

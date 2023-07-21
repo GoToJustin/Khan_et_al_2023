@@ -1,0 +1,319 @@
+/* Two color analysis BATCH-MODE macro:
+
+	"Batch_Process_TC_Ver21.txt"
+
+	Justin E. Molloy
+	Francis Crick Institute
+	justin.molloy@crick.ac.uk
+	27-Jan-2023
+
+Note: you might need to change the version number of the Analysis Macro ... see bottom of this macro!
+" *********** Update this line to call the correct Analysis Macro! ***********"
+
+When you run this macro you will be prompted to select a directory..
+You should choose the top-level video file data directory.
+The macro will then search through all sub-directories looking for "log.txt" files and then process
+the data.
+
+When it finds a "log.txt" file it reads the record meta data which looks something like this:
+
+#
+$Date:17/09/2021 $Time:17:36:45 $Number:1 $Illumination:488nm, 561nm,  $Intensity:100%$
+ $Camera:Andor-iXon $RecType:Contin $Interval:---- $FramesInSeq:-- $Exposure:48ms $Gain:255$
+ $CellType:NA $Object:V-CaMK2alpha_dimer/R-CAM $Medium:AB-/1 mM Ca2+ $Temp:26$
+ $Note:$
+#
+
+Important information is picked out and the macro checks the relevant ".gmG" and ".gmR" data files exist in the 
+same directory. The data files are loaded and a call to "Two_Color_Analysis_Ver12.txt" macro is made (we also 
+pass the correct output directory name e.g. "WT_Holo"). Upon return, we go to the next entry in the Log.txt file
+until we have analysed all data files in that directory. Then it makes recursive calls to process all sub-directories.
+
+The program produces error messages ("JAVA Lang errors"...) not due to a programming error (as far as I can tell).
+
+If you run the macro another time it will overwrite the previous output data sets. So, simply rename "Two_color" 
+folder (on the desktop) to generate new output analysis data sets. e.g. if you want to try changing the 
+auto-thresholding to different levels e.g. 1% (percentile), 2%, 5%.
+
+The macros do not change any of the original video (xxxxx.gmR or xxxxxx.gmG) or log.txt data files.
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+    Note: Batch analysis runs much faster if you start multiple instances of ImageJ
+          Edit->Option-> Misc. -> Untick "single instance listener"
+          You can bring up a new imageJ window by double clicking on an image file.. 
+          (you can then close the image)... and start this macro!
+
+I found 3 or 4 instances of ImageJ running in parallel works well.... 
+you need to sub-divide your data files into a corresponding number of sub-directories.
+e.g. the main "October_Data" directory -> should be split into 4 roughly equal-size 
+folders "OctoberA", "OctoberB" .. etc
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+These values are passed to the "Two_Color" processing macro....
+
+.. this is the code on the receiving side...
+
+	defaultVal =   split(defaultList,",");
+	ct=0;
+	resultFolder = defaultVal[ct++];
+	Gpercentile =  parseFloat(defaultVal[ct++]);
+	Rpercentile =  parseFloat(defaultVal[ct++]);
+	minSize =      parseInt(defaultVal[ct++]);
+	maxSize=       parseInt(defaultVal[ct++]);
+	redLeakage=    parseFloat(defaultVal[ct++]);
+	leakOpt=       parseInt(defaultVal[ct++]);
+	gbleachOpt=    parseInt(defaultVal[ct++]);
+	rbleachOpt =   parseInt(defaultVal[ct++]);
+	redMaskOpt=    parseInt(defaultVal[ct++]);
+	flatFieldOpt=  parseInt(defaultVal[ct++]);
+	xCorrOpt=      parseInt(defaultVal[ct++]);
+	spotAnalOpt=   parseInt(defaultVal[ct++]);
+	op1Opt=        parseInt(defaultVal[ct++]); 	// save: RunLogFile.txt
+	op2Opt=        parseInt(defaultVal[ct++]); 	// save: Summary_Stats.csv
+	op3Opt=        parseInt(defaultVal[ct++]); 	// save: xxxx_Bleach.csv
+	op4Opt=        parseInt(defaultVal[ct++]); 	// save: xxxx_Photobleach.jpg	
+
+	closeAllOpt=   1;
+Note: "closeAllOpt" is always set to be true!
+
+*/
+
+// default spot size detection bounds
+minSize = 9;
+maxSize = 100;
+// default threshold percentile value (1->5% seems good) 
+Gpercentile = 1.0;
+Rpercentile = 2.0;
+
+// various processing control "Options"
+redLeakage = 0.10;
+redMaskOpt = 1;
+leakOpt = 1;
+gbleachOpt = 1;
+rbleachOpt = 1;
+flatFieldOpt = 1;
+xCorrOpt = 1;
+
+// save options:
+var spotAnalOpt= true;  // save: spot analysis output
+var op1Opt= true; 	// save: RunLogFile.txt
+var op2Opt= true; 	// save: Summary_Stats.csv
+var op3Opt= true; 	// save: xxxx_Bleach.csv
+var op4Opt= true; 	// save: xxxx_Photobleach.jpg
+
+
+// Put up a dialog box ... this can be added to at a later date if required!
+//=========================================================================
+	Dialog.create      ("Processing Options:");
+	Dialog.addNumber   ("Green threshold (%)",            Gpercentile);
+	Dialog.addNumber   ("Red Threshold (%)",              Rpercentile);
+
+	Dialog.addNumber   ("Min Spot Size (pixels)",         minSize);
+	Dialog.addNumber   ("Max Spot Size (pixels)",         maxSize);
+	Dialog.addNumber   ("Green->Red CrossTalk",           redLeakage);
+
+	Dialog.addCheckbox ("Remove Green->Red crosstalk?",   leakOpt);
+	Dialog.addCheckbox ("Correct Green Photobleaching?",  gbleachOpt);
+	Dialog.addCheckbox ("Correct Red Photobleaching?",    rbleachOpt);
+	Dialog.addCheckbox ("Flatten uneven field?",  	      flatFieldOpt);
+	Dialog.addCheckbox ("Do Red Mask?",                   redMaskOpt);
+	Dialog.addCheckbox ("Do cross-correlation?",          xCorrOpt);
+
+	Dialog.addCheckbox ("Save: spot analysis summary?",   spotAnalOpt);
+	Dialog.addCheckbox ("Save: RunLogFile.txt?",          op1Opt);
+	Dialog.addCheckbox ("Save: Summary_Stats.csv?",       op2Opt);
+	Dialog.addCheckbox ("Save: xxxx_Bleach.csv?",         op3Opt);
+	Dialog.addCheckbox ("Save: xxxx_Photobleach.jpg?",    op4Opt);
+	Dialog.show	();
+
+// Read variables back from the menu - in the right order
+	Gpercentile =  Dialog.getNumber();
+	Rpercentile =  Dialog.getNumber();
+	minSize =      Dialog.getNumber();
+	maxSize =      Dialog.getNumber();
+	redLeakage =   Dialog.getNumber();
+
+	leakOpt =      Dialog.getCheckbox();
+	gbleachOpt =   Dialog.getCheckbox();
+	rbleachOpt =   Dialog.getCheckbox();
+	flatFieldOpt=  Dialog.getCheckbox();
+	redMaskOpt =   Dialog.getCheckbox();
+ 	xCorrOpt =     Dialog.getCheckbox();
+
+	spotAnalOpt =  Dialog.getCheckbox();
+	op1Opt =       Dialog.getCheckbox();
+	op2Opt =       Dialog.getCheckbox();
+	op3Opt =       Dialog.getCheckbox();
+	op4Opt =       Dialog.getCheckbox();
+
+// pack the variables into a comma-delimited string 
+// Note: the "folder name" will be added to the begining before we make the call.
+
+defaultList = d2s(Gpercentile,3)+","+d2s(Rpercentile,3)+","+d2s(minSize,0)+","+d2s(maxSize,0)+","+d2s(redLeakage,3)+",";
+defaultList = defaultList+d2s(leakOpt,0)+","+d2s(gbleachOpt,0)+","+d2s(rbleachOpt,0)+","+d2s(flatFieldOpt,0)+",";
+defaultList = defaultList+d2s(redMaskOpt,0)+","+d2s(xCorrOpt,0)+","+d2s(spotAnalOpt,0)+","+d2s(op1Opt,0)+",";
+defaultList = defaultList+d2s(op2Opt,0)+","+d2s(op3Opt,0)+","+d2s(op4Opt,0);
+
+var count = 0;
+
+// Prompt user to choose a directory
+dir = getDirectory("Choose a Directory ");
+
+getDateAndTime(styear, stmonth, stweek, stday, sthour, stmin, stsec, stmsec);
+
+// call the function - which then calls itself recursively until "done"
+listFiles(dir); 
+
+// Finish up:
+getDateAndTime(year, month, week, day, hour, min, sec, msec);
+
+print ("Proc_Start_Date:"+stday+"/"+d2s(stmonth+1,0)+"/"+styear);
+print ("Proc_Start_Time:"+sthour+":"+stmin+":"+stsec);
+print ("Proc_End_Date:"+day+"/"+d2s(month+1,0)+"/"+year);
+print ("Proc_End_Time:"+hour+":"+min+":"+sec);
+print ("Files_Processed:"+d2s(count,0));
+
+//=======================
+function listFiles(dir) {
+//=======================
+
+list = getFileList(dir);
+
+for (i=0; i<list.length; i++) {
+
+// if a directory then recursively look for sub-directories and files..
+	
+	if (endsWith(list[i], "/")){
+
+// I don't recursive calls it's easy to get confused !
+		listFiles(dir+list[i]);
+	} 
+
+	else {
+
+// check for "log.txt" file
+		if (list[i] == "log.txt")  logList(dir);
+		if (list[i].endsWith(".gmG")&& !File.exists(dir+"log.txt"))
+		print("No_log:" + dir + list[i]);
+	}
+}
+}
+
+
+//======================
+function logList(path) {
+//======================
+str = File.openAsString(path+"log.txt");
+
+fileInfo=split(str,"#");
+
+for (i=0;i<fileInfo.length-1;i+=1){
+str = split(fileInfo[i],"$");
+
+ddmmyy= split(str[1],":/");
+dd= ddmmyy[1];
+mm= ddmmyy[2];
+yy= substring(ddmmyy[3],2,4);
+
+fnum = split(str[3],":");
+fID= String.trim(fnum[1]);
+if (lengthOf(fID)<2) fID="0"+fID;
+
+fname = dd+mm+yy+"r"+fID;
+redRec=fname+".gmR";
+greenRec=fname+".gmG";
+
+p = str[15].toLowerCase;
+p1="";
+p2="";
+if (p.contains("myosin")) p1="Calibrations";
+if (p.contains("beta") || p.contains("k2b") || p.contains("hb")) p1="Beta_";
+if (p.contains("beta-2") || p.contains("beta2") || p.contains("b-2") || p.contains("b2")) p1="Beta_T306_307A";
+if (p.contains("beta-3") || p.contains("beta3") || p.contains("b-3") || p.contains("b3")) p1="Beta_T306_307A_T287A";
+if (p.contains("306") && p.contains("307")) p1="Beta_T306_307A";
+if (p.contains("306") && p.contains("307") && p.contains("287")) p1="Beta_T306_307A_T287A";
+
+if (p.contains("alpha") || p.contains("k2a")|| p.contains("ha")) p1="Alpha_";
+if (p.contains("alpha-2") || p.contains("alpha2") || p.contains("a-2") || p.contains("a2")) p1="Alpha_T305_306A";
+if (p.contains("alpha-3") || p.contains("alpha3") || p.contains("a-3") || p.contains("a3")) p1="Alpha_T305_306A_T286A";
+if (p.contains("305") && p.contains("306")) p1="Alpha_T305_306A";
+if (p.contains("305") && p.contains("306") && p.contains("286")) p1="Alpha_T305_306A_T286A";
+
+if (p.contains("dimer")) p2="Dimer";
+if (p.contains("454")) p2="Dimer";
+if (p.contains("t287a")) p2="T287A";
+if (p.contains("t287d")) p2="T287D";
+if (p.contains("t286a")) p2="T286A";
+
+if (p.contains("k43r")) p2="K43R";
+
+//==================
+p = str[15].toLowerCase;
+p1="";
+p2="";
+if (p.contains("myosin")) p1="Calibrations";
+if (p.contains("beta") || p.contains("k2b") || p.contains("hb")) p1="Beta_";
+if (p.contains("beta-2") || p.contains("beta2") || p.contains("b-2") || p.contains("b2")) p1="Beta_T306_307A";
+if (p.contains("beta-3") || p.contains("beta3") || p.contains("b-3") || p.contains("b3")) p1="Beta_T306_307A_T287A";
+if (p.contains("306") && p.contains("307")) p1="Beta_T306_307A";
+if (p.contains("306") && p.contains("307") && p.contains("287")) p1="Beta_T306_307A_T287A";
+
+if (p.contains("alpha") || p.contains("k2a")|| p.contains("ha")) p1="Alpha_";
+if (p.contains("alpha-2") || p.contains("alpha2") || p.contains("a-2") || p.contains("a2")) p1="Alpha_T305_306A";
+if (p.contains("alpha-3") || p.contains("alpha3") || p.contains("a-3") || p.contains("a3")) p1="Alpha_T305_306A_T286A";
+if (p.contains("305") && p.contains("306")) p1="Alpha_T305_306A";
+if (p.contains("305") && p.contains("306") && p.contains("286")) p1="Alpha_T305_306A_T286A";
+
+if (p.contains("dimer")) p2="Dimer";
+if (p.contains("454")) p2="Dimer";
+if (p.contains("t287a")) p2="T287A";
+if (p.contains("t287d")) p2="T287D";
+if (p.contains("t286a")) p2="T286A";
+
+if (p.contains("k43r")) p2="K43R";
+
+if (p1=="") p1="UnSorted_";
+if (p1.length<10 && p2.length>0) p1 = p1+p2;
+if ((p1=="Alpha_" || p1=="Beta_") && (p2=="")) p1 = p1 + "WT_Holo";
+if(str[15].contains("Simulation")) p1="Simulation_";
+
+list = getList("image.titles");
+if(list.length > 0) exit("you need to close all open images");
+
+if(File.exists(path+redRec) && File.exists(path+greenRec)){
+//	print (fileInfo[i]);
+	print (str[5]);  			// Intensity
+	print (str[15]); 			// Object
+	print (str[16]); 			// Medium
+	print("Protein_Name:"+p1); 	// protein nmae
+
+	run("GMV Reader", "select="+path+redRec);
+	run("GMV Reader", "select="+path+greenRec);
+
+//	print(substring(str[19],5));
+//	print ("p1=",p1);
+//	print ("DefaultList=",defaultList);
+
+	count++;
+	p1+= "," + defaultList;
+	if (p1.contains("Simulation")) p1+= ","+substring(str[19],5);
+
+//	print ("Passing:",p1);
+
+// *********** Update this line to call the correct Analysis Macro! ***********
+
+	runMacro("C://Program Files//ImageJ//plugins//Macros//Two_Color_Analysis_Ver21.txt", p1);
+
+// ****************************************************************************
+
+} else {
+ 	//print("files not found error");
+}
+//print ("    ===    ");
+
+}
+
+}
+
